@@ -28,6 +28,39 @@ class NoiseAwareApp(tk.Tk):
         self.geometry("600x400")
         self.resizable(False, False)
 
+        # Theme configuration
+        self.themes = {
+            "light": {
+                "bg": "#f0f0f0",
+                "fg": "#1e1e1e",
+                "button_bg": "#ffffff",
+                "button_fg": "#1e1e1e",
+                "button_active_bg": "#e0e0e0",
+                "entry_bg": "#ffffff",
+                "entry_fg": "#1e1e1e",
+                "accent": "#4a90e2",
+                "progress_trough": "#d9d9d9",
+            },
+            "dark": {
+                "bg": "#1f2933",
+                "fg": "#f5f5f5",
+                "button_bg": "#323f4b",
+                "button_fg": "#f5f5f5",
+                "button_active_bg": "#3e4c59",
+                "entry_bg": "#3e4c59",
+                "entry_fg": "#f5f5f5",
+                "accent": "#9f7aea",
+                "progress_trough": "#52606d",
+            },
+        }
+        self.current_theme = "light"
+        self.style = ttk.Style()
+        try:
+            self.style.theme_use("clam")
+        except tk.TclError:
+            # Fallback to default theme if clam is not available
+            self.style.theme_use("default")
+
         # Recording state
         self.recording_active = True
         self.app_running = True  # flag to stop threads safely
@@ -40,17 +73,18 @@ class NoiseAwareApp(tk.Tk):
         threading.Thread(target=self.passive_monitor, daemon=True).start()
 
         # Container for frames (pages)
-        container = tk.Frame(self)
-        container.pack(side="top", fill="both", expand=True)
-        container.grid_rowconfigure(0, weight=1)
-        container.grid_columnconfigure(0, weight=1)
+        self.container = tk.Frame(self)
+        self.container.pack(side="top", fill="both", expand=True)
+        self.container.grid_rowconfigure(0, weight=1)
+        self.container.grid_columnconfigure(0, weight=1)
 
         self.frames = {}
         for F in (MainMenu, PomodoroPage, ReportPage, SettingsPage):
-            frame = F(container, self)
+            frame = F(self.container, self)
             self.frames[F] = frame
             frame.grid(row=0, column=0, sticky="nsew")
 
+        self.apply_theme()
         self.show_frame(MainMenu)
 
     def show_frame(self, page):
@@ -102,6 +136,70 @@ class NoiseAwareApp(tk.Tk):
         if messagebox.askokcancel("Quit", "Are you sure you want to exit?"):
             self.app_running = False
             self.destroy()
+
+    def set_theme(self, theme_name):
+        """Update the current theme and refresh UI colors."""
+        if theme_name not in self.themes:
+            return
+        if theme_name == self.current_theme:
+            return
+        self.current_theme = theme_name
+        self.apply_theme()
+
+    def apply_theme(self):
+        """Apply the current theme colors to the entire UI."""
+        colors = self.themes[self.current_theme]
+        self.configure(bg=colors["bg"])
+        self.container.configure(bg=colors["bg"])
+        self.style.configure(
+            "Theme.Horizontal.TProgressbar",
+            background=colors["accent"],
+            troughcolor=colors["progress_trough"],
+            bordercolor=colors["bg"],
+            lightcolor=colors["accent"],
+            darkcolor=colors["accent"],
+        )
+
+        for frame in self.frames.values():
+            self._apply_theme_to_widget(frame, colors)
+            if hasattr(frame, "on_theme_applied"):
+                frame.on_theme_applied(colors)
+
+    def _apply_theme_to_widget(self, widget, colors):
+        """Recursively apply theme colors to widgets within frames."""
+        if isinstance(widget, (tk.Frame, tk.LabelFrame, tk.Toplevel)):
+            widget.configure(bg=colors["bg"])
+
+        if isinstance(widget, tk.Label):
+            widget.configure(bg=colors["bg"], fg=colors["fg"])
+        elif isinstance(widget, tk.Button):
+            widget.configure(
+                bg=colors["button_bg"],
+                fg=colors["button_fg"],
+                activebackground=colors["button_active_bg"],
+                activeforeground=colors["button_fg"],
+                highlightbackground=colors["bg"],
+            )
+        elif isinstance(widget, tk.Radiobutton):
+            widget.configure(
+                bg=colors["bg"],
+                fg=colors["fg"],
+                activebackground=colors["button_active_bg"],
+                selectcolor=colors["bg"],
+                highlightbackground=colors["bg"],
+            )
+        elif isinstance(widget, tk.Entry):
+            widget.configure(
+                bg=colors["entry_bg"],
+                fg=colors["entry_fg"],
+                insertbackground=colors["fg"],
+                highlightbackground=colors["bg"],
+            )
+        elif isinstance(widget, ttk.Progressbar):
+            widget.configure(style="Theme.Horizontal.TProgressbar")
+
+        for child in widget.winfo_children():
+            self._apply_theme_to_widget(child, colors)
 
 
 # === Main Menu Page ===
@@ -259,12 +357,52 @@ class ReportPage(tk.Frame):
         tk.Button(self, text="Back", command=lambda: controller.show_frame(MainMenu)).pack()
 
 
-# === Settings Page (placeholder) ===
+# === Settings Page ===
 class SettingsPage(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
-        tk.Label(self, text="Settings Page (Coming Soon)", font=("Arial", 14)).pack(pady=20)
-        tk.Button(self, text="Back", command=lambda: controller.show_frame(MainMenu)).pack()
+        self.controller = controller
+
+        tk.Label(self, text="Settings", font=("Arial", 16, "bold")).pack(pady=(20, 10))
+        tk.Label(self, text="Customize how the Noise-Aware Productivity Coach looks.",
+                 font=("Arial", 10)).pack(pady=(0, 20))
+
+        self.theme_var = tk.StringVar(value=controller.current_theme)
+
+        theme_section = tk.Frame(self)
+        theme_section.pack(pady=10, padx=20, fill="x")
+
+        tk.Label(theme_section, text="Color Theme", font=("Arial", 12, "bold")).pack(anchor="w")
+        tk.Label(theme_section,
+                 text="Choose between light and dark appearances to match your environment.",
+                 wraplength=400, justify="left").pack(anchor="w", pady=(0, 10))
+
+        options_frame = tk.Frame(theme_section)
+        options_frame.pack(anchor="w")
+
+        tk.Radiobutton(options_frame, text="Light", value="light",
+                       variable=self.theme_var, command=self.change_theme).pack(anchor="w", pady=2)
+        tk.Radiobutton(options_frame, text="Dark", value="dark",
+                       variable=self.theme_var, command=self.change_theme).pack(anchor="w", pady=2)
+
+        self.preview_label = tk.Label(
+            self,
+            text="Preview: Productive focus starts with the right lighting!",
+            font=("Arial", 11, "italic"),
+            wraplength=420,
+            justify="center",
+        )
+        self.preview_label.pack(pady=25, padx=20)
+
+        tk.Button(self, text="Back", command=lambda: controller.show_frame(MainMenu)).pack(pady=10)
+
+    def change_theme(self):
+        self.controller.set_theme(self.theme_var.get())
+
+    def on_theme_applied(self, _colors):
+        """Keep the selection synced with the controller state."""
+        if self.theme_var.get() != self.controller.current_theme:
+            self.theme_var.set(self.controller.current_theme)
 
 
 # === Run App ===
