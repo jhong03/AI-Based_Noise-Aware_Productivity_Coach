@@ -65,6 +65,7 @@ class NoiseAwareApp(tk.Tk):
         self.recording_active = True
         self.app_running = True  # flag to stop threads safely
         self.session_id = None   # Pomodoro session ID tracking
+        self.pomodoro_alert_enabled = True  # toggleable Pomodoro completion alerts
 
         # Handle window close safely
         self.protocol("WM_DELETE_WINDOW", self.safe_quit)
@@ -146,6 +147,18 @@ class NoiseAwareApp(tk.Tk):
         self.current_theme = theme_name
         self.apply_theme()
 
+    def set_pomodoro_alert_enabled(self, enabled):
+        """Toggle the Pomodoro completion alert sound."""
+        self.pomodoro_alert_enabled = bool(enabled)
+
+    def play_pomodoro_alert(self):
+        """Play the default system alert sound for Pomodoro completions."""
+        try:
+            self.bell()
+        except tk.TclError:
+            # Fallback: silently ignore if the platform cannot play the bell.
+            pass
+
     def apply_theme(self):
         """Apply the current theme colors to the entire UI."""
         colors = self.themes[self.current_theme]
@@ -181,6 +194,14 @@ class NoiseAwareApp(tk.Tk):
                 highlightbackground=colors["bg"],
             )
         elif isinstance(widget, tk.Radiobutton):
+            widget.configure(
+                bg=colors["bg"],
+                fg=colors["fg"],
+                activebackground=colors["button_active_bg"],
+                selectcolor=colors["bg"],
+                highlightbackground=colors["bg"],
+            )
+        elif isinstance(widget, tk.Checkbutton):
             widget.configure(
                 bg=colors["bg"],
                 fg=colors["fg"],
@@ -338,6 +359,8 @@ class PomodoroPage(tk.Frame):
             self.running = False
             if is_work:
                 self.controller.end_pomodoro_session(status="Completed")
+                if self.controller.pomodoro_alert_enabled:
+                    self.controller.play_pomodoro_alert()
                 messagebox.showinfo("Pomodoro", "Session completed! Take a break.")
             else:
                 messagebox.showinfo("Break", "Break time is over!")
@@ -385,6 +408,27 @@ class SettingsPage(tk.Frame):
         tk.Radiobutton(options_frame, text="Dark", value="dark",
                        variable=self.theme_var, command=self.change_theme).pack(anchor="w", pady=2)
 
+        alert_section = tk.Frame(self)
+        alert_section.pack(pady=10, padx=20, fill="x")
+
+        tk.Label(alert_section, text="Pomodoro Alerts", font=("Arial", 12, "bold")).pack(anchor="w")
+        tk.Label(
+            alert_section,
+            text="Play a sound when a Pomodoro work session finishes.",
+            wraplength=400,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 10))
+
+        self.alert_var = tk.BooleanVar(value=controller.pomodoro_alert_enabled)
+        tk.Checkbutton(
+            alert_section,
+            text="Enable completion sound",
+            variable=self.alert_var,
+            command=self.toggle_alert,
+        ).pack(anchor="w", pady=2)
+
+        tk.Button(alert_section, text="Preview Sound", command=controller.play_pomodoro_alert).pack(anchor="w", pady=(5, 0))
+
         self.preview_label = tk.Label(
             self,
             text="Preview: Productive focus starts with the right lighting!",
@@ -398,6 +442,9 @@ class SettingsPage(tk.Frame):
 
     def change_theme(self):
         self.controller.set_theme(self.theme_var.get())
+
+    def toggle_alert(self):
+        self.controller.set_pomodoro_alert_enabled(self.alert_var.get())
 
     def on_theme_applied(self, _colors):
         """Keep the selection synced with the controller state."""
