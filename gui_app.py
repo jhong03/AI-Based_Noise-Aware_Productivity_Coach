@@ -183,6 +183,9 @@ class NoiseAwareApp(tk.Tk):
         if isinstance(widget, (tk.Frame, tk.LabelFrame, tk.Toplevel)):
             widget.configure(bg=colors["bg"])
 
+        if isinstance(widget, tk.Canvas):
+            widget.configure(bg=colors["bg"], highlightbackground=colors["bg"])
+
         if isinstance(widget, tk.Label):
             widget.configure(bg=colors["bg"], fg=colors["fg"])
         elif isinstance(widget, tk.Button):
@@ -386,13 +389,37 @@ class SettingsPage(tk.Frame):
         super().__init__(parent)
         self.controller = controller
 
-        tk.Label(self, text="Settings", font=("Arial", 16, "bold")).pack(pady=(20, 10))
-        tk.Label(self, text="Customize how the Noise-Aware Productivity Coach looks.",
+        # === Scrollable container ===
+        self.columnconfigure(0, weight=1)
+        self._canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self, orient="vertical", command=self._canvas.yview)
+        self._canvas.configure(yscrollcommand=scrollbar.set)
+
+        self._canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        content = tk.Frame(self._canvas)
+        content_id = self._canvas.create_window((0, 0), window=content, anchor="nw")
+
+        def _update_scrollregion(event):
+            self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+
+        def _resize_content(event):
+            self._canvas.itemconfigure(content_id, width=event.width)
+
+        content.bind("<Configure>", _update_scrollregion)
+        self._canvas.bind("<Configure>", _resize_content)
+
+        content.bind("<Enter>", lambda _e: self._bind_mousewheel())
+        content.bind("<Leave>", lambda _e: self._unbind_mousewheel())
+
+        tk.Label(content, text="Settings", font=("Arial", 16, "bold")).pack(pady=(20, 10))
+        tk.Label(content, text="Customize how the Noise-Aware Productivity Coach looks.",
                  font=("Arial", 10)).pack(pady=(0, 20))
 
         self.theme_var = tk.StringVar(value=controller.current_theme)
 
-        theme_section = tk.Frame(self)
+        theme_section = tk.Frame(content)
         theme_section.pack(pady=10, padx=20, fill="x")
 
         tk.Label(theme_section, text="Color Theme", font=("Arial", 12, "bold")).pack(anchor="w")
@@ -408,7 +435,7 @@ class SettingsPage(tk.Frame):
         tk.Radiobutton(options_frame, text="Dark", value="dark",
                        variable=self.theme_var, command=self.change_theme).pack(anchor="w", pady=2)
 
-        alert_section = tk.Frame(self)
+        alert_section = tk.Frame(content)
         alert_section.pack(pady=10, padx=20, fill="x")
 
         tk.Label(alert_section, text="Pomodoro Alerts", font=("Arial", 12, "bold")).pack(anchor="w")
@@ -430,7 +457,7 @@ class SettingsPage(tk.Frame):
         tk.Button(alert_section, text="Preview Sound", command=controller.play_pomodoro_alert).pack(anchor="w", pady=(5, 0))
 
         self.preview_label = tk.Label(
-            self,
+            content,
             text="Preview: Productive focus starts with the right lighting!",
             font=("Arial", 11, "italic"),
             wraplength=420,
@@ -438,7 +465,7 @@ class SettingsPage(tk.Frame):
         )
         self.preview_label.pack(pady=25, padx=20)
 
-        tk.Button(self, text="Back", command=lambda: controller.show_frame(MainMenu)).pack(pady=10)
+        tk.Button(content, text="Back", command=lambda: controller.show_frame(MainMenu)).pack(pady=10)
 
     def change_theme(self):
         self.controller.set_theme(self.theme_var.get())
@@ -450,6 +477,25 @@ class SettingsPage(tk.Frame):
         """Keep the selection synced with the controller state."""
         if self.theme_var.get() != self.controller.current_theme:
             self.theme_var.set(self.controller.current_theme)
+
+    def _bind_mousewheel(self):
+        self._canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        self._canvas.bind_all("<Button-4>", self._on_mousewheel)
+        self._canvas.bind_all("<Button-5>", self._on_mousewheel)
+
+    def _unbind_mousewheel(self):
+        self._canvas.unbind_all("<MouseWheel>")
+        self._canvas.unbind_all("<Button-4>")
+        self._canvas.unbind_all("<Button-5>")
+
+    def _on_mousewheel(self, event):
+        if event.num == 4:
+            delta = -1
+        elif event.num == 5:
+            delta = 1
+        else:
+            delta = -int(event.delta / 120)
+        self._canvas.yview_scroll(delta, "units")
 
 
 # === Run App ===
