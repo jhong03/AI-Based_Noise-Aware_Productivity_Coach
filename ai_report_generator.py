@@ -1,81 +1,96 @@
 # ai_report_generator.py
 import os
-import requests
-import json
+from dotenv import load_dotenv
+from huggingface_hub import InferenceClient
 
-# ======================
-# CONFIGURATION
-# ======================
-# These are the canonical Hugging Face environment variable names. If a deployment
-# needs a custom alias, append it to this tuple instead of replacing the existing
-# entries so the defaults continue to work out of the box.
+# === Handle older/newer error classes gracefully ===
+try:
+    from huggingface_hub import InferenceEndpointError as HFError
+except ImportError:
+    try:
+        from huggingface_hub import InferenceAPIError as HFError
+    except ImportError:
+        class HFError(Exception):
+            pass
+
+# === Load environment ===
+load_dotenv()
+
 _ENV_VAR_CANDIDATES = (
-    "HF_API_KEY",
+    "API_KEY",
     "HUGGINGFACEHUB_API_TOKEN",
     "HUGGING_FACE_API_KEY",
 )
 
-
 def _load_hf_api_key():
-    """Return the first available Hugging Face API key from known environment variables."""
     for var_name in _ENV_VAR_CANDIDATES:
         value = os.getenv(var_name)
         if value:
             return value.strip()
     return None
 
-
 HF_API_KEY = _load_hf_api_key()
-API_URL = "https://api-inference.huggingface.co/models/google/gemma-2b"
-HEADERS = {"Authorization": f"Bearer {HF_API_KEY}"} if HF_API_KEY else {}
 
+# === Conversational models (chat-based) ===
+PRIMARY_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
+FALLBACK_MODELS = [
+    "HuggingFaceH4/zephyr-7b-beta",
+    "tiiuae/falcon-7b-instruct",
+    "google/gemma-2b-it",
+]
 
-def generate_ai_report(summary_text: str) -> str:
-    """
-    Generate a human-like productivity report based on summarized noise data.
-    Uses Hugging Face 'google/gemma-2b' (free public model).
-    """
+# === Helper ===
+def _chat_with_model(model_name: str, prompt: str, client: InferenceClient):
+    """Try generating a conversational-style reply."""
     try:
-        if not HF_API_KEY:
-            env_hint = ", ".join(_ENV_VAR_CANDIDATES)
-            return (
-                "❌ Missing Hugging Face API key. Set one of the following environment "
-                f"variables and try again: {env_hint}."
-            )
-
-        # Compose prompt
-        prompt = (
-            "You are a friendly productivity coach. "
-            "Analyze the following daily noise and focus summary, "
-            "and write a short, human-like report with motivational suggestions:\n\n"
-            f"{summary_text}\n\n"
-            "The report should be in a conversational tone, around 4–6 sentences."
+        print(f"🧠 Trying chat model: {model_name}")
+        response = client.chat_completion(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": "You are a friendly productivity coach."},
+                {
+                    "role": "user",
+                    "content": (
+                        "Analyze the following daily noise and focus summary, "
+                        "and write a concise motivational report (4–6 sentences):\n\n"
+                        f"{prompt}\n\n"
+                        "Use a warm, supportive tone and end with one actionable tip."
+                    ),
+                },
+            ],
+            max_tokens=300,
+            temperature=0.7,
         )
-
-        payload = {"inputs": prompt, "parameters": {"max_new_tokens": 300, "temperature": 0.7}}
-        response = requests.post(API_URL, headers=HEADERS, json=payload, timeout=60)
-        response.raise_for_status()
-
-        data = response.json()
-        # Handle possible variations in Hugging Face responses
-        if isinstance(data, list) and len(data) > 0 and "generated_text" in data[0]:
-            return data[0]["generated_text"]
-        elif isinstance(data, dict) and "generated_text" in data:
-            return data["generated_text"]
-        else:
-            return "⚠️ No valid response received from the AI model."
-
-    except requests.exceptions.HTTPError as http_err:
-        status_code = http_err.response.status_code if http_err.response else ""
-        if status_code == 401:
-            return (
-                "❌ Authentication failed with Hugging Face (401 Unauthorized). "
-                "Please verify that your API key is correct and has access to the model."
-            )
-        return f"❌ Network error while contacting Hugging Face: {http_err}"
-    except requests.exceptions.RequestException as e:
-        return f"❌ Network error while contacting Hugging Face: {e}"
-    except json.JSONDecodeError:
-        return "❌ Error decoding response from Hugging Face API."
+        if response and response.choices and response.choices[0].message:
+            return response.choices[0].message["content"].strip()
+    except HFError as e:
+        print(f"⚠️ Inference error for {model_name}: {e}")
     except Exception as e:
-        return f"❌ Unexpected error: {e}"
+        print(f"⚠️ Unexpected error for {model_name}: {e}")
+    return None
+
+# === Main ===
+def generate_ai_report(summary_text: str) -> str:
+    """Generate a motivational daily productivity report via chat-based inference."""
+    if not HF_API_KEY:
+        env_hint = ", ".join(_ENV_VAR_CANDIDATES)
+        return f"❌ Missing Hugging Face API key. Set one of: {env_hint}"
+
+    client = InferenceClient(token=HF_API_KEY)
+
+    for model in [PRIMARY_MODEL] + FALLBACK_MODELS:
+        result = _chat_with_model(model, summary_text, client)
+        if result:
+            return result
+
+    return "⚠️ All models failed. Try regenerating your token or check internet access."
+
+# === Quick local test ===
+if __name__ == "__main__":
+    demo_summary = """
+    Date: Oct 10, 2025
+    Average sound level: 63.5 dB SPL
+    Noise mix: Quiet 30% | Moderate 50% | Noisy 20%
+    Completed Pomodoros: 3 (≈ 75 minutes of focused work)
+    """
+    print(generate_ai_report(demo_summary))
