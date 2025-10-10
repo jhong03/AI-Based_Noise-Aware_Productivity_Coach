@@ -391,7 +391,15 @@ class ReportPage(tk.Frame):
         super().__init__(parent)
         self.controller = controller
 
-        tk.Label(self, text="Daily Productivity Insights", font=("Arial", 14, "bold")).pack(pady=(20, 10))
+        nav_frame = tk.Frame(self)
+        nav_frame.pack(fill="x", padx=15, pady=(15, 0))
+        tk.Button(
+            nav_frame,
+            text="⬅ Back to Main Menu",
+            command=lambda: controller.show_frame(MainMenu),
+        ).pack(anchor="w")
+
+        tk.Label(self, text="Daily Productivity Insights", font=("Arial", 14, "bold")).pack(pady=(10, 10))
 
         self.summary_box = tk.Text(self, height=8, width=70, wrap="word", state="disabled")
         self.summary_box.pack(padx=20, pady=5)
@@ -402,7 +410,11 @@ class ReportPage(tk.Frame):
         self.ai_report_box = tk.Text(self, height=10, width=70, wrap="word", state="disabled")
         self.ai_report_box.pack(padx=20, pady=(5, 15))
 
-        tk.Button(self, text="Back", command=lambda: controller.show_frame(MainMenu)).pack(pady=(0, 20))
+        tk.Button(
+            self,
+            text="⬅ Back to Main Menu",
+            command=lambda: controller.show_frame(MainMenu),
+        ).pack(pady=(0, 20))
 
     def on_show(self):
         self.refresh_summary()
