@@ -3,11 +3,12 @@ from tkinter import messagebox, ttk
 import threading
 import time
 import sqlite3
-from datetime import datetime
+from datetime import datetime, date
 import os
 
 # === import your backend code ===
 from FYP import init_storage, get_db_level, noise_category, classify_sound, save_noise_log
+from ai_report_generator import generate_ai_report
 
 # Initialize storage once
 init_storage()
@@ -90,6 +91,8 @@ class NoiseAwareApp(tk.Tk):
 
     def show_frame(self, page):
         frame = self.frames[page]
+        if hasattr(frame, "on_show"):
+            frame.on_show()
         frame.tkraise()
 
     def passive_monitor(self):
@@ -213,6 +216,13 @@ class NoiseAwareApp(tk.Tk):
                 highlightbackground=colors["bg"],
             )
         elif isinstance(widget, tk.Entry):
+            widget.configure(
+                bg=colors["entry_bg"],
+                fg=colors["entry_fg"],
+                insertbackground=colors["fg"],
+                highlightbackground=colors["bg"],
+            )
+        elif isinstance(widget, tk.Text):
             widget.configure(
                 bg=colors["entry_bg"],
                 fg=colors["entry_fg"],
@@ -379,8 +389,132 @@ class PomodoroPage(tk.Frame):
 class ReportPage(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
-        tk.Label(self, text="Report Page (Coming Soon)", font=("Arial", 14)).pack(pady=20)
-        tk.Button(self, text="Back", command=lambda: controller.show_frame(MainMenu)).pack()
+        self.controller = controller
+
+        tk.Label(self, text="Daily Productivity Insights", font=("Arial", 14, "bold")).pack(pady=(20, 10))
+
+        self.summary_box = tk.Text(self, height=8, width=70, wrap="word", state="disabled")
+        self.summary_box.pack(padx=20, pady=5)
+
+        self.generate_button = tk.Button(self, text="✨ Generate AI Report", command=self.generate_report)
+        self.generate_button.pack(pady=10)
+
+        self.ai_report_box = tk.Text(self, height=10, width=70, wrap="word", state="disabled")
+        self.ai_report_box.pack(padx=20, pady=(5, 15))
+
+        tk.Button(self, text="Back", command=lambda: controller.show_frame(MainMenu)).pack(pady=(0, 20))
+
+    def on_show(self):
+        self.refresh_summary()
+
+    def refresh_summary(self):
+        summary_text = self.build_daily_summary()
+        self.summary_box.config(state="normal")
+        self.summary_box.delete("1.0", tk.END)
+        if summary_text:
+            self.summary_box.insert(tk.END, summary_text)
+        else:
+            self.summary_box.insert(tk.END, "No noise activity recorded yet for today. Start a session to collect data!")
+        self.summary_box.config(state="disabled")
+
+    def build_daily_summary(self):
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+
+            today = date.today()
+            cursor.execute("SELECT COUNT(*), AVG(db_level) FROM NoiseLog WHERE DATE(timestamp)=?", (today,))
+            total_logs, avg_db = cursor.fetchone()
+
+            if not total_logs:
+                conn.close()
+                return ""
+
+            avg_db = avg_db or 0
+
+            cursor.execute(
+                """
+                SELECT noise_category, COUNT(*)
+                FROM NoiseLog
+                WHERE DATE(timestamp)=?
+                GROUP BY noise_category
+                """,
+                (today,),
+            )
+            category_counts = {row[0]: row[1] for row in cursor.fetchall()}
+
+            cursor.execute(
+                """
+                SELECT label, COUNT(*) as cnt
+                FROM NoiseLog
+                WHERE DATE(timestamp)=?
+                GROUP BY label
+                ORDER BY cnt DESC
+                LIMIT 1
+                """,
+                (today,),
+            )
+            label_row = cursor.fetchone()
+            top_label = label_row[0] if label_row else "Unknown"
+
+            cursor.execute(
+                """
+                SELECT COUNT(*),
+                       SUM(strftime('%s', COALESCE(end_time, start_time)) - strftime('%s', start_time)) / 60.0
+                FROM PomodoroSession
+                WHERE DATE(start_time)=? AND status='Completed'
+                """,
+                (today,),
+            )
+            session_count, focus_minutes = cursor.fetchone()
+            focus_minutes = focus_minutes or 0
+
+            conn.close()
+
+            quiet = category_counts.get("Quiet", 0)
+            moderate = category_counts.get("Moderate", 0)
+            noisy = category_counts.get("Noisy", 0)
+
+            def pct(count):
+                return (count / total_logs) * 100 if total_logs else 0
+
+            lines = [
+                f"Date: {today.strftime('%b %d, %Y')}",
+                f"Total noise logs captured: {total_logs}",
+                f"Average sound level: {avg_db:.1f} dB SPL",
+                (
+                    "Noise mix: "
+                    f"Quiet {pct(quiet):.0f}% | "
+                    f"Moderate {pct(moderate):.0f}% | "
+                    f"Noisy {pct(noisy):.0f}%"
+                ),
+                f"Most common sound detected: {top_label}",
+                f"Completed Pomodoros: {session_count or 0} (≈ {focus_minutes:.0f} minutes of focused work)",
+            ]
+
+            return "\n".join(lines)
+        except sqlite3.Error as exc:
+            return f"❌ Error loading summary: {exc}"
+
+    def generate_report(self):
+        summary_text = self.build_daily_summary()
+        if not summary_text:
+            messagebox.showinfo("AI Report", "No data available for today. Complete a session to generate a report.")
+            return
+
+        def task():
+            report = generate_ai_report(summary_text)
+            self.after(0, lambda: self.display_ai_report(report))
+
+        self.generate_button.config(state="disabled", text="Generating…")
+        threading.Thread(target=task, daemon=True).start()
+
+    def display_ai_report(self, report_text):
+        self.generate_button.config(state="normal", text="✨ Generate AI Report")
+        self.ai_report_box.config(state="normal")
+        self.ai_report_box.delete("1.0", tk.END)
+        self.ai_report_box.insert(tk.END, report_text)
+        self.ai_report_box.config(state="disabled")
 
 
 # === Settings Page ===
