@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+.DS_Store
+.vscode/
+.idea/
+
+Documents/NoiseLogs/
+noise_focus.db
+logs/
+reports/
+datasets/
+coach_model/
+last_train_date.txt
+*.log
