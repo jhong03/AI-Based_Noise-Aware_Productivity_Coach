@@ -1,0 +1,10 @@
+transformers>=4.42
+datasets>=2.20
+peft>=0.11
+accelerate>=0.34
+torch           # install the right CUDA/CPU wheel as needed
+sounddevice
+tensorflow==2.15.*
+tensorflow-hub
+tf-keras
+numpy
