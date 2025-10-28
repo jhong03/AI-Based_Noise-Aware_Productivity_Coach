@@ -5,14 +5,28 @@ import time
 import sqlite3
 from datetime import datetime, date
 import os
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import pandas as pd
+from tkcalendar import DateEntry
+from FYP import memory_guard, MemoryGuard
+import sys
+from io import StringIO
 
+mem_guard = MemoryGuard(threshold_mb=5000, check_interval_sec=5)
+mem_guard.start()
 # === import your backend code ===
-from FYP import init_storage, get_db_level, noise_category, classify_sound, save_noise_log
-from ai_report_generator import generate_ai_report
+from FYP import init_storage, init_reports_table, get_db_level, noise_category, classify_sound, save_noise_log
+# ⛔️ DO NOT import the AI generator here anymore (it loads the model at startup)
+# from ai_report_generator_local import generate_ai_report
 
 # Initialize storage once
 init_storage()
+init_reports_table()
+from background_retrain import background_retrain
 
+# start background retraining once app launches
+background_retrain(interval_hours=24)
 
 # === Local DB connection helper ===
 def get_connection():
@@ -26,7 +40,7 @@ class NoiseAwareApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Noise-Aware Productivity Coach")
-        self.geometry("600x400")
+        self.geometry("1100x700")
         self.resizable(False, False)
 
         # Theme configuration
@@ -81,7 +95,7 @@ class NoiseAwareApp(tk.Tk):
         self.container.grid_columnconfigure(0, weight=1)
 
         self.frames = {}
-        for F in (MainMenu, PomodoroPage, ReportPage, SettingsPage):
+        for F in (MainMenu, PomodoroPage, ReportPage, DetailedReportPage, SettingsPage):
             frame = F(self.container, self)
             self.frames[F] = frame
             frame.grid(row=0, column=0, sticky="nsew")
@@ -103,6 +117,13 @@ class NoiseAwareApp(tk.Tk):
                 category = noise_category(db)
                 label, confidence = classify_sound(audio_chunk)
                 save_noise_log(db, category, label, confidence, session_id=self.session_id)
+                # Small sleep to avoid pegging a CPU core
+
+                poll_interval = 0.05 if self.recording_active else 1.0
+                # When active but quiet (e.g., low RMS), you can stretch to 0.2 s:
+                if db < 35:
+                    poll_interval = 0.2
+                time.sleep(poll_interval)
             else:
                 time.sleep(1)  # pause monitoring when muted
 
@@ -136,10 +157,69 @@ class NoiseAwareApp(tk.Tk):
         self.session_id = None
 
     def safe_quit(self):
-        """Stop threads and exit safely."""
+        """Force-terminate all threads, models, and subprocesses to free memory completely."""
         if messagebox.askokcancel("Quit", "Are you sure you want to exit?"):
+            print("🧹 Cleaning up background tasks...")
+
+            # Stop custom threads
             self.app_running = False
-            self.destroy()
+            self.recording_active = False
+
+            import gc, os, signal, psutil, time
+
+            # Give threads a moment to stop gracefully
+            time.sleep(0.5)
+
+            # 🧠 Try unloading models (AI + TF + Torch)
+            try:
+                import torch, gc
+                torch.cuda.empty_cache()
+                gc.collect()
+                print("✅ Cleared PyTorch GPU cache and memory.")
+            except Exception as e:
+                print(f"⚠️ Torch cleanup skipped: {e}")
+
+            try:
+                import tensorflow as tf
+                tf.keras.backend.clear_session()
+                print("✅ TensorFlow session cleared.")
+            except Exception as e:
+                print(f"⚠️ TensorFlow cleanup skipped: {e}")
+
+            try:
+                import torch
+                torch.cuda.empty_cache()
+                print("✅ PyTorch cache cleared.")
+            except Exception:
+                pass
+
+            gc.collect()
+
+            # 🧩 Kill all background threads and subprocesses for this PID
+            pid = os.getpid()
+            process = psutil.Process(pid)
+            for child in process.children(recursive=True):
+                try:
+                    child.terminate()
+                except Exception:
+                    pass
+
+            # Give them 1s to terminate nicely
+            gone, alive = psutil.wait_procs(process.children(recursive=True), timeout=1)
+            for p in alive:
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+
+            # Close Tk
+            try:
+                self.destroy()
+            except Exception:
+                pass
+
+            print("💀 Terminating Python process completely.")
+            os.kill(pid, signal.SIGTERM)
 
     def set_theme(self, theme_name):
         """Update the current theme and refresh UI colors."""
@@ -170,7 +250,7 @@ class NoiseAwareApp(tk.Tk):
         self.style.configure(
             "Theme.Horizontal.TProgressbar",
             background=colors["accent"],
-            troughcolor=colors["progress_trough"],
+            troughcolor=colors["progress_trrough"] if "progress_trrough" in colors else colors["progress_trough"],
             bordercolor=colors["bg"],
             lightcolor=colors["accent"],
             darkcolor=colors["accent"],
@@ -182,58 +262,127 @@ class NoiseAwareApp(tk.Tk):
                 frame.on_theme_applied(colors)
 
     def _apply_theme_to_widget(self, widget, colors):
-        """Recursively apply theme colors to widgets within frames."""
+        """Recursively apply theme colors to widgets within frames, skipping special widgets that don't support 'bg'."""
+        from tkcalendar import DateEntry
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+        # skip widgets that shouldn't be themed recursively
+        skip_types = (DateEntry, FigureCanvasTkAgg)
+        if isinstance(widget, skip_types):
+            return
+
+        # --- Base background containers ---
         if isinstance(widget, (tk.Frame, tk.LabelFrame, tk.Toplevel)):
             widget.configure(bg=colors["bg"])
 
         if isinstance(widget, tk.Canvas):
             widget.configure(bg=colors["bg"], highlightbackground=colors["bg"])
 
-        if isinstance(widget, tk.Label):
-            widget.configure(bg=colors["bg"], fg=colors["fg"])
-        elif isinstance(widget, tk.Button):
-            widget.configure(
-                bg=colors["button_bg"],
-                fg=colors["button_fg"],
-                activebackground=colors["button_active_bg"],
-                activeforeground=colors["button_fg"],
-                highlightbackground=colors["bg"],
-            )
-        elif isinstance(widget, tk.Radiobutton):
-            widget.configure(
-                bg=colors["bg"],
-                fg=colors["fg"],
-                activebackground=colors["button_active_bg"],
-                selectcolor=colors["bg"],
-                highlightbackground=colors["bg"],
-            )
-        elif isinstance(widget, tk.Checkbutton):
-            widget.configure(
-                bg=colors["bg"],
-                fg=colors["fg"],
-                activebackground=colors["button_active_bg"],
-                selectcolor=colors["bg"],
-                highlightbackground=colors["bg"],
-            )
-        elif isinstance(widget, tk.Entry):
-            widget.configure(
-                bg=colors["entry_bg"],
-                fg=colors["entry_fg"],
-                insertbackground=colors["fg"],
-                highlightbackground=colors["bg"],
-            )
-        elif isinstance(widget, tk.Text):
-            widget.configure(
-                bg=colors["entry_bg"],
-                fg=colors["entry_fg"],
-                insertbackground=colors["fg"],
-                highlightbackground=colors["bg"],
-            )
-        elif isinstance(widget, ttk.Progressbar):
-            widget.configure(style="Theme.Horizontal.TProgressbar")
+        # --- Standard widgets ---
+        try:
+            if isinstance(widget, tk.Label):
+                widget.configure(bg=colors["bg"], fg=colors["fg"])
+            elif isinstance(widget, tk.Button):
+                widget.configure(
+                    bg=colors["button_bg"],
+                    fg=colors["button_fg"],
+                    activebackground=colors["button_active_bg"],
+                    activeforeground=colors["button_fg"],
+                    highlightbackground=colors["bg"],
+                )
+            elif isinstance(widget, tk.Radiobutton):
+                widget.configure(
+                    bg=colors["bg"],
+                    fg=colors["fg"],
+                    activebackground=colors["button_active_bg"],
+                    selectcolor=colors["bg"],
+                    highlightbackground=colors["bg"],
+                )
+            elif isinstance(widget, tk.Checkbutton):
+                widget.configure(
+                    bg=colors["bg"],
+                    fg=colors["fg"],
+                    activebackground=colors["button_active_bg"],
+                    selectcolor=colors["bg"],
+                    highlightbackground=colors["bg"],
+                )
+            elif isinstance(widget, tk.Entry):
+                widget.configure(
+                    bg=colors["entry_bg"],
+                    fg=colors["entry_fg"],
+                    insertbackground=colors["fg"],
+                    highlightbackground=colors["bg"],
+                )
+            elif isinstance(widget, tk.Text):
+                widget.configure(
+                    bg=colors["entry_bg"],
+                    fg=colors["entry_fg"],
+                    insertbackground=colors["fg"],
+                    highlightbackground=colors["bg"],
+                )
+            elif isinstance(widget, ttk.Progressbar):
+                widget.configure(style="Theme.Horizontal.TProgressbar")
+        except Exception:
+            # some third-party widgets (e.g. tkcalendar internals) don't accept bg/fg
+            pass
 
+        # --- Recurse into children safely ---
         for child in widget.winfo_children():
             self._apply_theme_to_widget(child, colors)
+
+    def show_log_window(self):
+        if hasattr(self, "log_window") and self.log_window.winfo_exists():
+            self.log_window.lift()
+            return
+
+        self.log_window = tk.Toplevel(self)
+        self.log_window.title("Live System Logs")
+        self.log_window.geometry("650x450")
+        self.log_window.configure(bg=self.themes[self.current_theme]["bg"])
+
+        # Text area styled like a terminal
+        self.log_text_area = tk.Text(
+            self.log_window,
+            wrap="word",
+            state="disabled",
+            bg="#1e1e1e",
+            fg="#00ff66",
+            insertbackground="#00ff66",
+        )
+        self.log_text_area.pack(fill="both", expand=True)
+
+        scrollbar = tk.Scrollbar(self.log_window, command=self.log_text_area.yview)
+        scrollbar.pack(side="right", fill="y")
+        self.log_text_area.config(yscrollcommand=scrollbar.set)
+
+        # ✅ Redirect prints from this point onwards
+        self.redirect_print_to_gui()
+
+    class DualOutput:
+        def __init__(self, widget):
+            self.widget = widget
+            self.console = sys.__stdout__
+
+        def write(self, text):
+            try:
+                if self.widget and self.widget.winfo_exists():
+                    self.widget.config(state="normal")
+                    self.widget.insert(tk.END, text)
+                    self.widget.see(tk.END)
+                    self.widget.config(state="disabled")
+            except:  # GUI closed → just write to terminal
+                pass
+
+            # Always still print to terminal
+            self.console.write(text)
+
+        def flush(self):
+            self.console.flush()
+
+    # ✅ 3) Bind print() output to the live log window
+    def redirect_print_to_gui(self):
+        if hasattr(self, "log_text_area"):
+            sys.stdout = self.DualOutput(self.log_text_area)
 
 
 # === Main Menu Page ===
@@ -248,6 +397,11 @@ class MainMenu(tk.Frame):
         report_icon = tk.Label(self, text="📑", font=("Arial", 16), cursor="hand2")
         report_icon.place(relx=0.05, rely=0.05, anchor="nw")
         report_icon.bind("<Button-1>", lambda e: controller.show_frame(ReportPage))
+
+        # Terminal / Log icon
+        log_icon = tk.Label(self, text="🖥️", font=("Arial", 16), cursor="hand2")
+        log_icon.place(relx=0.95, rely=0.95, anchor="sw")  # adjust position
+        log_icon.bind("<Button-1>", lambda e: self.controller.show_log_window())
 
         settings_icon = tk.Label(self, text="⚙️", font=("Arial", 16), cursor="hand2")
         settings_icon.place(relx=0.95, rely=0.05, anchor="ne")
@@ -385,12 +539,14 @@ class PomodoroPage(tk.Frame):
         self.timer_label.config(text="00:00")
 
 
-# === Report Page (placeholder) ===
+# === Report Page (Optimized with Loading Spinner and Faster AI Report) ===
 class ReportPage(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
+        self.spinner_running = False
 
+        # --- Navigation ---
         nav_frame = tk.Frame(self)
         nav_frame.pack(fill="x", padx=15, pady=(15, 0))
         tk.Button(
@@ -401,21 +557,32 @@ class ReportPage(tk.Frame):
 
         tk.Label(self, text="Daily Productivity Insights", font=("Arial", 14, "bold")).pack(pady=(10, 10))
 
+        # --- Summary Box ---
         self.summary_box = tk.Text(self, height=8, width=70, wrap="word", state="disabled")
         self.summary_box.pack(padx=20, pady=5)
 
+        # --- Generate Button ---
         self.generate_button = tk.Button(self, text="✨ Generate AI Report", command=self.generate_report)
         self.generate_button.pack(pady=10)
 
+        # --- Spinner / Status Label ---
+        self.status_label = tk.Label(self, text="", font=("Arial", 10, "italic"), fg="#888")
+        self.status_label.pack(pady=(0, 5))
+
+        # --- AI Report Box ---
         self.ai_report_box = tk.Text(self, height=10, width=70, wrap="word", state="disabled")
         self.ai_report_box.pack(padx=20, pady=(5, 15))
+
+        tk.Button(self, text="📊 View Detailed Report",
+                  command=lambda: controller.show_frame(DetailedReportPage)).pack(pady=5)
 
         tk.Button(
             self,
             text="⬅ Back to Main Menu",
             command=lambda: controller.show_frame(MainMenu),
-        ).pack(pady=(0, 20))
+        ).pack(pady=(10, 20))
 
+    # --- On Page Show ---
     def on_show(self):
         self.refresh_summary()
 
@@ -429,55 +596,46 @@ class ReportPage(tk.Frame):
             self.summary_box.insert(tk.END, "No noise activity recorded yet for today. Start a session to collect data!")
         self.summary_box.config(state="disabled")
 
+    # --- Build Daily Summary ---
     def build_daily_summary(self):
         try:
             conn = get_connection()
             cursor = conn.cursor()
-
             today = date.today()
-            cursor.execute("SELECT COUNT(*), AVG(db_level) FROM NoiseLog WHERE DATE(timestamp)=?", (today,))
-            total_logs, avg_db = cursor.fetchone()
+            today_str = today.strftime("%Y-%m-%d")  # ✅ Convert to string
 
+            # Total logs and average dB
+            cursor.execute("SELECT COUNT(*), AVG(db_level) FROM NoiseLog WHERE DATE(timestamp)=?", (today_str,))
+            total_logs, avg_db = cursor.fetchone()
             if not total_logs:
                 conn.close()
                 return ""
 
             avg_db = avg_db or 0
 
-            cursor.execute(
-                """
-                SELECT noise_category, COUNT(*)
-                FROM NoiseLog
-                WHERE DATE(timestamp)=?
-                GROUP BY noise_category
-                """,
-                (today,),
-            )
+            # Noise category counts
+            cursor.execute("""
+                SELECT noise_category, COUNT(*) FROM NoiseLog
+                WHERE DATE(timestamp)=? GROUP BY noise_category
+            """, (today_str,))
             category_counts = {row[0]: row[1] for row in cursor.fetchall()}
 
-            cursor.execute(
-                """
-                SELECT label, COUNT(*) as cnt
-                FROM NoiseLog
+            # Most frequent sound label
+            cursor.execute("""
+                SELECT label, COUNT(*) FROM NoiseLog
                 WHERE DATE(timestamp)=?
-                GROUP BY label
-                ORDER BY cnt DESC
-                LIMIT 1
-                """,
-                (today,),
-            )
-            label_row = cursor.fetchone()
-            top_label = label_row[0] if label_row else "Unknown"
+                GROUP BY label ORDER BY COUNT(*) DESC LIMIT 1
+            """, (today_str,))
+            row = cursor.fetchone()
+            top_label = row[0] if row else "Unknown"
 
-            cursor.execute(
-                """
+            # Completed Pomodoro sessions + duration
+            cursor.execute("""
                 SELECT COUNT(*),
                        SUM(strftime('%s', COALESCE(end_time, start_time)) - strftime('%s', start_time)) / 60.0
                 FROM PomodoroSession
                 WHERE DATE(start_time)=? AND status='Completed'
-                """,
-                (today,),
-            )
+            """, (today_str,))
             session_count, focus_minutes = cursor.fetchone()
             focus_minutes = focus_minutes or 0
 
@@ -487,46 +645,80 @@ class ReportPage(tk.Frame):
             moderate = category_counts.get("Moderate", 0)
             noisy = category_counts.get("Noisy", 0)
 
-            def pct(count):
-                return (count / total_logs) * 100 if total_logs else 0
+            def pct(x):
+                return (x / total_logs) * 100 if total_logs else 0
 
-            lines = [
+            return "\n".join([
                 f"Date: {today.strftime('%b %d, %Y')}",
-                f"Total noise logs captured: {total_logs}",
+                f"Total noise logs: {total_logs}",
                 f"Average sound level: {avg_db:.1f} dB SPL",
-                (
-                    "Noise mix: "
-                    f"Quiet {pct(quiet):.0f}% | "
-                    f"Moderate {pct(moderate):.0f}% | "
-                    f"Noisy {pct(noisy):.0f}%"
-                ),
-                f"Most common sound detected: {top_label}",
-                f"Completed Pomodoros: {session_count or 0} (≈ {focus_minutes:.0f} minutes of focused work)",
-            ]
+                f"Noise mix → Quiet {pct(quiet):.0f}% | Moderate {pct(moderate):.0f}% | Noisy {pct(noisy):.0f}%",
+                f"Most common sound: {top_label}",
+                f"Completed Pomodoros: {session_count or 0} (≈ {focus_minutes:.0f} min focused work)"
+            ])
+        except sqlite3.Error as e:
+            return f"❌ DB Error: {e}"
 
-            return "\n".join(lines)
-        except sqlite3.Error as exc:
-            return f"❌ Error loading summary: {exc}"
-
+    # --- Report Generation with Progress & Lazy model load/unload ---
     def generate_report(self):
         summary_text = self.build_daily_summary()
         if not summary_text:
-            messagebox.showinfo("AI Report", "No data available for today. Complete a session to generate a report.")
+            messagebox.showinfo("AI Report", "No data available for today.")
             return
 
-        def task():
-            report = generate_ai_report(summary_text)
-            self.after(0, lambda: self.display_ai_report(report))
+        # progress bar UI
+        self.progress = ttk.Progressbar(self, orient="horizontal", length=350, mode="determinate", maximum=100)
+        self.progress.pack(pady=5)
+        self.status_label.config(text="Initializing...")
 
-        self.generate_button.config(state="disabled", text="Generating…")
-        threading.Thread(target=task, daemon=True).start()
+        def on_progress(percent, message):
+            self.progress["value"] = percent
+            self.status_label.config(text=message)
+            self.update_idletasks()
 
-    def display_ai_report(self, report_text):
-        self.generate_button.config(state="normal", text="✨ Generate AI Report")
+        def background_task():
+            try:
+                # ✅ Use subprocess-safe generator (no manual unload)
+                from ai_report_generator_local import generate_ai_report
+
+                try:
+                    report = generate_ai_report(summary_text, progress_callback=on_progress)
+                except TypeError:
+                    # In case callback isn't supported
+                    report = generate_ai_report(summary_text)
+
+                # ✅ Save to local DB
+                conn = get_connection()
+                cur = conn.cursor()
+                cur.execute(
+                    "INSERT INTO ReportHistory (date, summary, ai_report) VALUES (?, ?, ?)",
+                    (datetime.now().strftime("%Y-%m-%d"), summary_text, report)
+                )
+                conn.commit()
+                conn.close()
+
+                # ✅ Update GUI safely on main thread
+                self.after(0, lambda: self.display_ai_report(report))
+                self.after(0, lambda: self.status_label.config(text="✅ Report Ready!"))
+
+            except Exception as e:
+                self.after(0, lambda: self.display_ai_report(f"⚠️ Error generating report:\n{e}"))
+                self.after(0, lambda: self.status_label.config(text="⚠️ Failed."))
+            finally:
+                self.after(0, lambda: self.progress.destroy())
+                self.after(0, lambda: self.generate_button.config(state="normal"))
+
+        # disable button to prevent double clicks
+        self.generate_button.config(state="disabled")
+        threading.Thread(target=background_task, daemon=True).start()
+
+    # --- Display Final Report ---
+    def display_ai_report(self, text):
         self.ai_report_box.config(state="normal")
         self.ai_report_box.delete("1.0", tk.END)
-        self.ai_report_box.insert(tk.END, report_text)
+        self.ai_report_box.insert(tk.END, text)
         self.ai_report_box.config(state="disabled")
+        self.generate_button.config(state="normal")
 
 
 # === Settings Page ===
@@ -547,7 +739,7 @@ class SettingsPage(tk.Frame):
         content = tk.Frame(self._canvas)
         content_id = self._canvas.create_window((0, 0), window=content, anchor="nw")
 
-        def _update_scrollregion(event):
+        def _update_scrollregion(_):
             self._canvas.configure(scrollregion=self._canvas.bbox("all"))
 
         def _resize_content(event):
@@ -642,6 +834,183 @@ class SettingsPage(tk.Frame):
         else:
             delta = -int(event.delta / 120)
         self._canvas.yview_scroll(delta, "units")
+
+
+# === Detailed Report Page (Tabbed View: AI Reports + Analytics) ===
+class DetailedReportPage(tk.Frame):
+    def __init__(self, parent, controller):
+        super().__init__(parent)
+        self.controller = controller
+        colors = controller.themes[controller.current_theme]
+        self.db_path = os.path.join(os.path.expanduser("~"), "Documents", "NoiseLogs", "noise_focus.db")
+
+        tk.Label(self, text="📊 Detailed Productivity Insights", font=("Arial", 16, "bold"),
+                 bg=colors["bg"], fg=colors["fg"]).pack(pady=10)
+
+        tk.Button(self, text="⬅ Back to Reports",
+                  command=lambda: controller.show_frame(ReportPage)).pack(pady=5)
+
+        # --- Tab control ---
+        notebook = ttk.Notebook(self)
+        notebook.pack(fill="both", expand=True, padx=20, pady=10)
+
+        # ---------------- TAB 1 : AI Report History ----------------
+        tab_reports = tk.Frame(notebook, bg=colors["bg"])
+        notebook.add(tab_reports, text="📄 AI Reports")
+
+        # Date filter
+        filter_frame = tk.Frame(tab_reports, bg=colors["bg"])
+        filter_frame.pack(pady=10)
+        tk.Label(filter_frame, text="Select Date:", bg=colors["bg"], fg=colors["fg"]).pack(side="left", padx=5)
+        self.date_entry = DateEntry(filter_frame, width=12, background="darkblue",
+                                    foreground="white", borderwidth=2, date_pattern="yyyy-mm-dd")
+        self.date_entry.pack(side="left", padx=5)
+        tk.Button(filter_frame, text="🔍 Load Reports", command=self.load_reports).pack(side="left", padx=8)
+
+        # Scrollable report viewer
+        text_frame = tk.Frame(tab_reports, bg=colors["bg"])
+        text_frame.pack(fill="both", expand=True, padx=20, pady=10)
+        self.text_area = tk.Text(text_frame, wrap="word", font=("Segoe UI", 10),
+                                 bg=colors["entry_bg"], fg=colors["entry_fg"])
+        self.text_area.pack(side="left", fill="both", expand=True)
+        scrollbar = ttk.Scrollbar(text_frame, command=self.text_area.yview)
+        scrollbar.pack(side="right", fill="y")
+        self.text_area.config(yscrollcommand=scrollbar.set)
+
+        # ---------------- TAB 2 : Visual Analytics ----------------
+        tab_charts = tk.Frame(notebook, bg=colors["bg"])
+        notebook.add(tab_charts, text="📈 Visual Analytics")
+
+        # Date range selectors
+        range_frame = tk.Frame(tab_charts, bg=colors["bg"])
+        range_frame.pack(pady=10)
+        tk.Label(range_frame, text="Start:", bg=colors["bg"], fg=colors["fg"]).grid(row=0, column=0, padx=5)
+        self.start_date = DateEntry(range_frame, width=12, background="darkblue",
+                                    foreground="white", borderwidth=2, date_pattern="yyyy-mm-dd")
+        self.start_date.grid(row=0, column=1, padx=5)
+        tk.Label(range_frame, text="End:", bg=colors["bg"], fg=colors["fg"]).grid(row=0, column=2, padx=5)
+        self.end_date = DateEntry(range_frame, width=12, background="darkblue",
+                                  foreground="white", borderwidth=2, date_pattern="yyyy-mm-dd")
+        self.end_date.grid(row=0, column=3, padx=5)
+        tk.Button(range_frame, text="📅 Apply Filter", command=self.load_charts).grid(row=0, column=4, padx=10)
+
+        self.chart_frame = tk.Frame(tab_charts, bg=colors["bg"])
+        self.chart_frame.pack(fill="both", expand=True, padx=20, pady=10)
+
+    # ---------- TAB 1 : Load AI Reports ----------
+    def load_reports(self):
+        selected_date = self.date_entry.get_date().strftime("%Y-%m-%d")
+        self.text_area.delete(1.0, tk.END)
+        if not os.path.exists(self.db_path):
+            self.text_area.insert(tk.END, f"⚠️ Database not found at:\n{self.db_path}")
+            return
+
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            c.execute("""
+                SELECT date, summary, ai_report, created_at
+                FROM ReportHistory
+                WHERE date = ?
+                ORDER BY created_at DESC
+            """, (selected_date,))
+            rows = c.fetchall()
+            conn.close()
+        except Exception as e:
+            self.text_area.insert(tk.END, f"⚠️ Error loading reports:\n{e}")
+            return
+
+        if not rows:
+            self.text_area.insert(tk.END, f"No reports found for {selected_date}.\n")
+            return
+
+        for row in rows:
+            date_str, summary, ai_report, created_at = row
+            self.text_area.insert(tk.END, f"📅 Date: {date_str}\n🕒 Generated: {created_at}\n\n")
+            self.text_area.insert(tk.END, f"📋 Summary:\n{summary}\n\n")
+            self.text_area.insert(tk.END, f"💬 AI Report:\n{ai_report}\n")
+            self.text_area.insert(tk.END, "-"*90 + "\n\n")
+
+    # ---------- TAB 2 : Load Visual Charts ----------
+    def load_charts(self):
+        for widget in self.chart_frame.winfo_children():
+            widget.destroy()
+
+        try:
+            conn = sqlite3.connect(self.db_path)
+            df_logs = pd.read_sql_query("SELECT * FROM NoiseLog", conn)
+            df_sessions = pd.read_sql_query("SELECT * FROM PomodoroSession", conn)
+            conn.close()
+        except Exception as e:
+            tk.Label(self.chart_frame, text=f"⚠️ Failed to load data: {e}",
+                     font=("Arial", 12)).pack(pady=30)
+            return
+
+        if df_logs.empty:
+            tk.Label(self.chart_frame, text="No noise data available yet.",
+                     font=("Arial", 12)).pack(pady=30)
+            return
+
+        # === Robust timestamp parsing with UTC normalization ===
+        df_logs["timestamp"] = pd.to_datetime(df_logs["timestamp"], format="ISO8601", errors="coerce", utc=True)
+        df_logs = df_logs.dropna(subset=["timestamp"])
+        df_logs["timestamp"] = df_logs["timestamp"].dt.tz_convert(None)  # make tz-naive for plotting
+
+        start = pd.to_datetime(self.start_date.get_date())
+        end = pd.to_datetime(self.end_date.get_date()) + pd.Timedelta(days=1)
+        df_logs = df_logs[(df_logs["timestamp"] >= start) & (df_logs["timestamp"] < end)]
+
+        if not df_sessions.empty:
+            df_sessions["start_time"] = pd.to_datetime(df_sessions["start_time"], errors="coerce", utc=True)
+            df_sessions["end_time"] = pd.to_datetime(df_sessions["end_time"], errors="coerce", utc=True)
+            df_sessions = df_sessions.dropna(subset=["start_time"])
+            df_sessions["start_time"] = df_sessions["start_time"].dt.tz_convert(None)
+            df_sessions["end_time"] = df_sessions["end_time"].dt.tz_convert(None)
+            df_sessions = df_sessions[(df_sessions["start_time"] >= start) & (df_sessions["start_time"] < end)]
+
+        if df_logs.empty:
+            tk.Label(self.chart_frame, text="No records for this date range.",
+                     font=("Arial", 12)).pack(pady=30)
+            return
+
+        # === Build charts ===
+        fig, axes = plt.subplots(2, 2, figsize=(10, 6))
+        fig.suptitle(f"Noise & Focus Analytics ({start.date()} → {end.date()})",
+                     fontsize=14, fontweight="bold")
+
+        df_logs["date"] = pd.to_datetime(df_logs["timestamp"]).dt.date
+        df_logs["db_level"] = pd.to_numeric(df_logs["db_level"], errors="coerce")
+        df_logs.dropna(subset=["db_level"], inplace=True)
+
+        daily_avg = df_logs.groupby("date")["db_level"].mean()
+        axes[0, 0].plot(daily_avg.index, daily_avg.values, marker="o", color="steelblue")
+        axes[0, 0].set_title("Average dB Over Time")
+        axes[0, 0].set_ylabel("dB Level")
+        axes[0, 0].tick_params(axis="x", rotation=45)
+
+        counts = df_logs["noise_category"].value_counts()
+        axes[0, 1].pie(counts, labels=counts.index, autopct="%1.1f%%", startangle=90,
+                       colors=["#9ad3bc", "#f5b971", "#f08080"])
+        axes[0, 1].set_title("Noise Category Distribution")
+
+        if not df_sessions.empty:
+            df_sessions["duration"] = (df_sessions["end_time"] - df_sessions["start_time"]).dt.total_seconds() / 60
+            df_sessions.dropna(subset=["duration"], inplace=True)
+            axes[1, 0].bar(df_sessions.index, df_sessions["duration"], color="#77aaff")
+            axes[1, 0].set_title("Focus Duration per Session")
+            axes[1, 0].set_ylabel("Minutes")
+        else:
+            axes[1, 0].text(0.5, 0.5, "No completed sessions", ha="center", va="center")
+
+        axes[1, 1].scatter(df_logs["db_level"], df_logs["confidence"], alpha=0.6, color="#ee6666")
+        axes[1, 1].set_title("Noise Level vs Model Confidence")
+        axes[1, 1].set_xlabel("dB Level")
+        axes[1, 1].set_ylabel("YAMNet Confidence")
+
+        plt.tight_layout(rect=[0, 0, 1, 0.95])
+        canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
 
 
 # === Run App ===
