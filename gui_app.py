@@ -81,6 +81,7 @@ class NoiseAwareApp(tk.Tk):
         self.app_running = True  # flag to stop threads safely
         self.session_id = None   # Pomodoro session ID tracking
         self.pomodoro_alert_enabled = True  # toggleable Pomodoro completion alerts
+        self.mic_sensitivity = tk.IntVar(value=50)  # microphone sensitivity level
 
         # Handle window close safely
         self.protocol("WM_DELETE_WINDOW", self.safe_quit)
@@ -234,6 +235,20 @@ class NoiseAwareApp(tk.Tk):
         """Toggle the Pomodoro completion alert sound."""
         self.pomodoro_alert_enabled = bool(enabled)
 
+    def set_mic_sensitivity(self, value):
+        """Update the microphone sensitivity (0-100)."""
+        try:
+            numeric_value = int(float(value))
+        except (TypeError, ValueError):
+            return
+        numeric_value = max(0, min(100, numeric_value))
+        if self.mic_sensitivity.get() != numeric_value:
+            self.mic_sensitivity.set(numeric_value)
+
+    def adjust_mic_sensitivity(self, delta):
+        """Incrementally adjust microphone sensitivity."""
+        self.set_mic_sensitivity(self.mic_sensitivity.get() + delta)
+
     def play_pomodoro_alert(self):
         """Play the default system alert sound for Pomodoro completions."""
         try:
@@ -319,6 +334,14 @@ class NoiseAwareApp(tk.Tk):
                     fg=colors["entry_fg"],
                     insertbackground=colors["fg"],
                     highlightbackground=colors["bg"],
+                )
+            elif isinstance(widget, tk.Scale):
+                widget.configure(
+                    bg=colors["bg"],
+                    fg=colors["fg"],
+                    highlightbackground=colors["bg"],
+                    troughcolor=colors.get("progress_trough", colors["bg"]),
+                    activebackground=colors["accent"],
                 )
             elif isinstance(widget, ttk.Progressbar):
                 widget.configure(style="Theme.Horizontal.TProgressbar")
@@ -773,6 +796,44 @@ class SettingsPage(tk.Frame):
         tk.Radiobutton(options_frame, text="Dark", value="dark",
                        variable=self.theme_var, command=self.change_theme).pack(anchor="w", pady=2)
 
+        mic_section = tk.Frame(content)
+        mic_section.pack(pady=10, padx=20, fill="x")
+
+        tk.Label(mic_section, text="Microphone Sensitivity", font=("Arial", 12, "bold")).pack(anchor="w")
+        tk.Label(
+            mic_section,
+            text="Adjust how sensitive the microphone is when monitoring noise.",
+            wraplength=400,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 10))
+
+        slider_frame = tk.Frame(mic_section)
+        slider_frame.pack(fill="x", pady=(0, 5))
+
+        minus_button = tk.Button(slider_frame, text="-", width=3,
+                                 command=lambda: self.adjust_sensitivity(-1))
+        minus_button.pack(side="left", padx=(0, 5))
+
+        self.sensitivity_scale = tk.Scale(
+            slider_frame,
+            from_=0,
+            to=100,
+            orient="horizontal",
+            variable=controller.mic_sensitivity,
+            command=self.on_sensitivity_change,
+            length=260,
+        )
+        self.sensitivity_scale.pack(side="left", fill="x", expand=True)
+
+        plus_button = tk.Button(slider_frame, text="+", width=3,
+                                command=lambda: self.adjust_sensitivity(1))
+        plus_button.pack(side="left", padx=(5, 0))
+
+        self.sensitivity_value_label = tk.Label(mic_section, font=("Arial", 10, "italic"))
+        self.sensitivity_value_label.pack(anchor="w")
+
+        self._update_sensitivity_display()
+
         alert_section = tk.Frame(content)
         alert_section.pack(pady=10, padx=20, fill="x")
 
@@ -811,10 +872,28 @@ class SettingsPage(tk.Frame):
     def toggle_alert(self):
         self.controller.set_pomodoro_alert_enabled(self.alert_var.get())
 
+    def on_show(self):
+        self._update_sensitivity_display()
+
     def on_theme_applied(self, _colors):
         """Keep the selection synced with the controller state."""
         if self.theme_var.get() != self.controller.current_theme:
             self.theme_var.set(self.controller.current_theme)
+        self._update_sensitivity_display()
+
+    def on_sensitivity_change(self, value):
+        self.controller.set_mic_sensitivity(value)
+        self._update_sensitivity_display()
+
+    def adjust_sensitivity(self, delta):
+        self.controller.adjust_mic_sensitivity(delta)
+        self._update_sensitivity_display()
+
+    def _update_sensitivity_display(self):
+        value = self.controller.mic_sensitivity.get()
+        self.sensitivity_value_label.config(text=f"Current level: {value}")
+        if int(self.sensitivity_scale.get()) != value:
+            self.sensitivity_scale.set(value)
 
     def _bind_mousewheel(self):
         self._canvas.bind_all("<MouseWheel>", self._on_mousewheel)
