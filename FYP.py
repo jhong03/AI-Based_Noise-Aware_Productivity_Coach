@@ -320,14 +320,41 @@ def classify_sound(audio_chunk):
 
 def save_noise_log(db_level, category, label, confidence, session_id=None):
     timestamp = now_iso_local()  # <<< CHANGED
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
-    INSERT INTO NoiseLog (timestamp, db_level, noise_category, label, confidence, session_id)
-    VALUES (?, ?, ?, ?, ?, ?)
-    """, (timestamp, db_level, category, label, confidence, session_id))
-    conn.commit()
-    conn.close()
+
+    # SQLite can momentarily lock when the AI report writer stores results.
+    # Retry a few times instead of letting the passive monitor thread crash.
+    max_attempts = 5
+    last_error = None
+    for attempt in range(1, max_attempts + 1):
+        conn = None
+        try:
+            conn = sqlite3.connect(DB_PATH, timeout=30)
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO NoiseLog (timestamp, db_level, noise_category, label, confidence, session_id)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (timestamp, db_level, category, label, confidence, session_id),
+            )
+            conn.commit()
+            break
+        except sqlite3.OperationalError as e:
+            last_error = e
+            if "locked" in str(e).lower() and attempt < max_attempts:
+                sleep_for = 0.1 * attempt
+                time.sleep(sleep_for)
+                continue
+            else:
+                print(f"⚠️ Noise log DB error: {e}")
+                return
+        finally:
+            if conn is not None:
+                conn.close()
+    else:
+        if last_error:
+            print(f"⚠️ Noise log DB error after retries: {last_error}")
+        return
 
     logfile = os.path.join(LOG_DIR, f"{date.today()}_pomodoro_logs.txt" if session_id else f"{date.today()}_logs.txt")
     with open(logfile, "a", encoding="utf-8") as f:
