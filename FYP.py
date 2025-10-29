@@ -265,14 +265,28 @@ def init_reports_table():
 # === NOISE CAPTURE + CLASSIFY ===
 # =============================
 
-def get_db_level(duration=0.96, samplerate=16000):
+def get_db_level(duration=0.96, samplerate=16000, sensitivity=50):
     try:
         recording = sd.rec(int(duration * samplerate), samplerate=samplerate, channels=1, dtype='float32')
         sd.wait()
-        rms = np.sqrt(np.mean(np.square(recording)))
+
+        # --- Apply microphone sensitivity adjustment ---
+        try:
+            sensitivity_value = float(sensitivity)
+        except (TypeError, ValueError):
+            sensitivity_value = 50.0
+
+        sensitivity_value = float(np.clip(sensitivity_value, 0.0, 100.0))
+        # Map 0-100 slider to a ±12 dB gain range (i.e., ±12 dB around the midpoint 50).
+        sensitivity_offset_db = ((sensitivity_value - 50.0) / 50.0) * 12.0
+        sensitivity_gain = 10 ** (sensitivity_offset_db / 20.0)
+
+        adjusted = np.clip(recording.flatten() * sensitivity_gain, -1.0, 1.0)
+
+        rms = np.sqrt(np.mean(np.square(adjusted)))
         db = 20 * np.log10(rms + 1e-6)
         db_spl = db + 100
-        return recording.flatten(), round(db_spl, 2)
+        return adjusted.astype(np.float32), round(db_spl, 2)
     except Exception as e:
         print(f"⚠️ Mic capture error: {e}")
         return np.zeros(int(duration * samplerate)), 0.0
@@ -462,10 +476,10 @@ def unload_ai_report_model(model=None):
 # === CONTINUOUS MONITOR ===
 # =============================
 
-def continuous_monitor(run_time=10, session_id=None):
+def continuous_monitor(run_time=10, session_id=None, sensitivity=50):
     start = time.time()
     while (time.time() - start) < run_time:
-        audio_chunk, db = get_db_level()
+        audio_chunk, db = get_db_level(sensitivity=sensitivity)
         audio_buffer.push(audio_chunk)
         window = audio_buffer.get_concatenated()
         if len(window) > 0:

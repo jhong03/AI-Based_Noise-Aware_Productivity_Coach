@@ -114,7 +114,7 @@ class NoiseAwareApp(tk.Tk):
         """Continuously record until app closes or muted."""
         while self.app_running:
             if self.recording_active:
-                audio_chunk, db = get_db_level()
+                audio_chunk, db = get_db_level(sensitivity=self.mic_sensitivity.get())
                 category = noise_category(db)
                 label, confidence = classify_sound(audio_chunk)
                 save_noise_log(db, category, label, confidence, session_id=self.session_id)
@@ -492,7 +492,7 @@ class MainMenu(tk.Frame):
     def update_mic_bar(self):
         if not self.mic_test_running:
             return
-        audio_chunk, db = get_db_level()
+        audio_chunk, db = get_db_level(sensitivity=self.controller.mic_sensitivity.get())
         intensity = min(max(db, 0), 100)
         self.progress["value"] = intensity
         self.after(50, self.update_mic_bar)
