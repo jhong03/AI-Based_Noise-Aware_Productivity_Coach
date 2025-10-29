@@ -82,6 +82,8 @@ class NoiseAwareApp(tk.Tk):
         self.session_id = None   # Pomodoro session ID tracking
         self.pomodoro_alert_enabled = True  # toggleable Pomodoro completion alerts
         self.mic_sensitivity = tk.IntVar(value=50)  # microphone sensitivity level
+        self._mic_sensitivity_value = self.mic_sensitivity.get()
+        self.mic_sensitivity.trace_add("write", self._cache_mic_sensitivity)
 
         # Handle window close safely
         self.protocol("WM_DELETE_WINDOW", self.safe_quit)
@@ -114,7 +116,8 @@ class NoiseAwareApp(tk.Tk):
         """Continuously record until app closes or muted."""
         while self.app_running:
             if self.recording_active:
-                audio_chunk, db = get_db_level(sensitivity=self.mic_sensitivity.get())
+                sensitivity = self.get_mic_sensitivity()
+                audio_chunk, db = get_db_level(sensitivity=sensitivity)
                 category = noise_category(db)
                 label, confidence = classify_sound(audio_chunk)
                 save_noise_log(db, category, label, confidence, session_id=self.session_id)
@@ -244,6 +247,18 @@ class NoiseAwareApp(tk.Tk):
         numeric_value = max(0, min(100, numeric_value))
         if self.mic_sensitivity.get() != numeric_value:
             self.mic_sensitivity.set(numeric_value)
+
+    def get_mic_sensitivity(self):
+        """Return the cached microphone sensitivity value for background threads."""
+        return getattr(self, "_mic_sensitivity_value", 50)
+
+    def _cache_mic_sensitivity(self, *_):
+        """Cache IntVar value so worker threads can read without touching Tk state."""
+        try:
+            self._mic_sensitivity_value = int(self.mic_sensitivity.get())
+        except tk.TclError:
+            # Tk may be shutting down; keep the last known value.
+            pass
 
     def adjust_mic_sensitivity(self, delta):
         """Incrementally adjust microphone sensitivity."""
