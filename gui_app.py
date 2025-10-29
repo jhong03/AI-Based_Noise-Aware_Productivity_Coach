@@ -1031,12 +1031,34 @@ class DetailedReportPage(tk.Frame):
             return
 
         # === Robust timestamp parsing with UTC normalization ===
-        df_logs["timestamp"] = pd.to_datetime(df_logs["timestamp"], format="ISO8601", errors="coerce", utc=True)
+        df_logs["timestamp"] = pd.to_datetime(df_logs["timestamp"], errors="coerce", utc=True)
         df_logs = df_logs.dropna(subset=["timestamp"])
         df_logs["timestamp"] = df_logs["timestamp"].dt.tz_convert(None)  # make tz-naive for plotting
 
-        start = pd.to_datetime(self.start_date.get_date())
-        end = pd.to_datetime(self.end_date.get_date()) + pd.Timedelta(days=1)
+        if df_logs.empty:
+            tk.Label(self.chart_frame, text="No valid timestamps available for plotting.",
+                     font=("Arial", 12)).pack(pady=30)
+            return
+
+        # Auto-adjust the visible range the first time charts are loaded
+        min_ts = df_logs["timestamp"].min()
+        max_ts = df_logs["timestamp"].max()
+
+        if not hasattr(self, "_chart_range_initialized") or not self._chart_range_initialized:
+            self.start_date.set_date(min_ts.date())
+            self.end_date.set_date(max_ts.date())
+            self._chart_range_initialized = True
+
+        # Ensure start <= end even if the user selects them in reverse order
+        start_date_value = self.start_date.get_date()
+        end_date_value = self.end_date.get_date()
+        if start_date_value > end_date_value:
+            start_date_value, end_date_value = end_date_value, start_date_value
+            self.start_date.set_date(start_date_value)
+            self.end_date.set_date(end_date_value)
+
+        start = pd.to_datetime(start_date_value)
+        end = pd.to_datetime(end_date_value) + pd.Timedelta(days=1)
         df_logs = df_logs[(df_logs["timestamp"] >= start) & (df_logs["timestamp"] < end)]
 
         if not df_sessions.empty:
@@ -1046,6 +1068,7 @@ class DetailedReportPage(tk.Frame):
             df_sessions["start_time"] = df_sessions["start_time"].dt.tz_convert(None)
             df_sessions["end_time"] = df_sessions["end_time"].dt.tz_convert(None)
             df_sessions = df_sessions[(df_sessions["start_time"] >= start) & (df_sessions["start_time"] < end)]
+            df_sessions.sort_values("start_time", inplace=True)
 
         if df_logs.empty:
             tk.Label(self.chart_frame, text="No records for this date range.",
@@ -1059,7 +1082,13 @@ class DetailedReportPage(tk.Frame):
 
         df_logs["date"] = pd.to_datetime(df_logs["timestamp"]).dt.date
         df_logs["db_level"] = pd.to_numeric(df_logs["db_level"], errors="coerce")
+        df_logs["confidence"] = pd.to_numeric(df_logs.get("confidence"), errors="coerce")
         df_logs.dropna(subset=["db_level"], inplace=True)
+
+        if df_logs.empty:
+            tk.Label(self.chart_frame, text="No valid dB readings for this date range.",
+                     font=("Arial", 12)).pack(pady=30)
+            return
 
         daily_avg = df_logs.groupby("date")["db_level"].mean()
         axes[0, 0].plot(daily_avg.index, daily_avg.values, marker="o", color="steelblue")
@@ -1075,13 +1104,22 @@ class DetailedReportPage(tk.Frame):
         if not df_sessions.empty:
             df_sessions["duration"] = (df_sessions["end_time"] - df_sessions["start_time"]).dt.total_seconds() / 60
             df_sessions.dropna(subset=["duration"], inplace=True)
-            axes[1, 0].bar(df_sessions.index, df_sessions["duration"], color="#77aaff")
+            if not df_sessions.empty:
+                session_labels = df_sessions["start_time"].dt.strftime("%m-%d %H:%M")
+                axes[1, 0].bar(session_labels, df_sessions["duration"], color="#77aaff")
+                axes[1, 0].tick_params(axis="x", rotation=45)
+            else:
+                axes[1, 0].text(0.5, 0.5, "No completed sessions", ha="center", va="center")
             axes[1, 0].set_title("Focus Duration per Session")
             axes[1, 0].set_ylabel("Minutes")
         else:
             axes[1, 0].text(0.5, 0.5, "No completed sessions", ha="center", va="center")
 
-        axes[1, 1].scatter(df_logs["db_level"], df_logs["confidence"], alpha=0.6, color="#ee6666")
+        scatter_data = df_logs.dropna(subset=["confidence"])
+        if not scatter_data.empty:
+            axes[1, 1].scatter(scatter_data["db_level"], scatter_data["confidence"], alpha=0.6, color="#ee6666")
+        else:
+            axes[1, 1].text(0.5, 0.5, "No confidence scores recorded", ha="center", va="center")
         axes[1, 1].set_title("Noise Level vs Model Confidence")
         axes[1, 1].set_xlabel("dB Level")
         axes[1, 1].set_ylabel("YAMNet Confidence")
