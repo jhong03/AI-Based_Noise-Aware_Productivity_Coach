@@ -1319,9 +1319,12 @@ class DetailedReportPage(tk.Frame):
             return
 
         # === Robust timestamp parsing with UTC normalization ===
+        local_tz = datetime.now().astimezone().tzinfo
         df_logs["timestamp"] = pd.to_datetime(df_logs["timestamp"], errors="coerce", utc=True)
         df_logs = df_logs.dropna(subset=["timestamp"])
-        df_logs["timestamp"] = df_logs["timestamp"].dt.tz_convert(None)  # make tz-naive for plotting
+        df_logs["timestamp"] = (
+            df_logs["timestamp"].dt.tz_convert(local_tz).dt.tz_localize(None)
+        )  # make tz-naive in local time for plotting
 
         if df_logs.empty:
             tk.Label(self.chart_frame, text="No valid timestamps available for plotting.",
@@ -1349,16 +1352,24 @@ class DetailedReportPage(tk.Frame):
             range_start = end_date_value
             range_end = start_date_value
 
-        start = pd.to_datetime(range_start)
-        end = pd.to_datetime(range_end) + pd.Timedelta(days=1)
+        start = datetime.combine(range_start, datetime.min.time())
+        end = datetime.combine(range_end, datetime.min.time()) + pd.Timedelta(days=1)
         df_logs = df_logs[(df_logs["timestamp"] >= start) & (df_logs["timestamp"] < end)]
 
         if not df_sessions.empty:
-            df_sessions["start_time"] = pd.to_datetime(df_sessions["start_time"], errors="coerce", utc=True)
-            df_sessions["end_time"] = pd.to_datetime(df_sessions["end_time"], errors="coerce", utc=True)
+            df_sessions["start_time"] = pd.to_datetime(
+                df_sessions["start_time"], errors="coerce", utc=True
+            )
+            df_sessions["end_time"] = pd.to_datetime(
+                df_sessions["end_time"], errors="coerce", utc=True
+            )
             df_sessions = df_sessions.dropna(subset=["start_time"])
-            df_sessions["start_time"] = df_sessions["start_time"].dt.tz_convert(None)
-            df_sessions["end_time"] = df_sessions["end_time"].dt.tz_convert(None)
+            df_sessions["start_time"] = (
+                df_sessions["start_time"].dt.tz_convert(local_tz).dt.tz_localize(None)
+            )
+            df_sessions["end_time"] = (
+                df_sessions["end_time"].dt.tz_convert(local_tz).dt.tz_localize(None)
+            )
             df_sessions = df_sessions[(df_sessions["start_time"] >= start) & (df_sessions["start_time"] < end)]
             df_sessions.sort_values("start_time", inplace=True)
 
