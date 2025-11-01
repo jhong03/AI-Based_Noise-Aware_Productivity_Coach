@@ -6,7 +6,10 @@ import sqlite3
 from datetime import datetime, date
 import os
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+import matplotlib.patches as mpatches
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import numpy as np
 import pandas as pd
 from tkcalendar import DateEntry
 from FYP import memory_guard, MemoryGuard
@@ -1041,6 +1044,250 @@ class DetailedReportPage(tk.Frame):
             self.text_area.insert(tk.END, f"💬 AI Report:\n{ai_report}\n")
             self.text_area.insert(tk.END, "-"*90 + "\n\n")
 
+    # ---------- Chart Helpers ----------
+    def _plot_noise_trend(self, ax, df_logs, df_sessions):
+        if df_logs.empty:
+            ax.text(0.5, 0.5, "No readings available", ha="center", va="center", fontsize=11)
+            ax.set_axis_off()
+            return
+
+        logs = df_logs.sort_values("timestamp").set_index("timestamp")
+        window = "15T"
+        category_levels = (
+            logs.groupby([pd.Grouper(freq=window), "noise_category"])["db_level"]
+            .mean()
+            .unstack(fill_value=0)
+        )
+        category_order = ["Quiet", "Moderate", "Noisy"]
+        category_levels = category_levels.reindex(columns=category_order, fill_value=0)
+        x = category_levels.index
+
+        if x.empty:
+            ax.text(0.5, 0.5, "Not enough data for trend", ha="center", va="center", fontsize=11)
+            ax.set_axis_off()
+            return
+
+        palette = {"Quiet": "#57cc99", "Moderate": "#ffd166", "Noisy": "#ef476f"}
+        stack_values = [category_levels[col].to_numpy() for col in category_order]
+        ax.stackplot(
+            x,
+            stack_values,
+            labels=[f"{col} avg dB" for col in category_order],
+            colors=[palette[col] for col in category_order],
+            alpha=0.55,
+        )
+
+        legend_handles = [
+            mpatches.Patch(color=palette[col], alpha=0.55, label=f"{col} avg dB")
+            for col in category_order
+        ]
+
+        avg_db = logs["db_level"].resample(window).mean().reindex(x)
+        avg_db = avg_db.interpolate("time")
+        ax.plot(x, avg_db, color="#26547C", linewidth=2.2, label="Overall avg dB")
+        legend_handles.append(mpatches.Patch(color="#26547C", label="Overall avg dB"))
+
+        if not df_sessions.empty and "start_time" in df_sessions:
+            completed_block = False
+            other_block = False
+            for _, session in df_sessions.iterrows():
+                start_time = session.get("start_time")
+                if pd.isna(start_time):
+                    continue
+                end_time = session.get("end_time")
+                if pd.isna(end_time):
+                    end_time = start_time + pd.Timedelta(minutes=25)
+                if str(session.get("status", "")).lower() == "completed":
+                    color = "#118ab2"
+                    completed_block = True
+                else:
+                    color = "#073b4c"
+                    other_block = True
+                ax.axvspan(start_time, end_time, color=color, alpha=0.12)
+
+            if completed_block:
+                legend_handles.append(mpatches.Patch(color="#118ab2", alpha=0.2, label="Completed focus block"))
+            if other_block:
+                legend_handles.append(mpatches.Patch(color="#073b4c", alpha=0.15, label="Active/Interrupted block"))
+
+        peak_time = avg_db.idxmax()
+        if pd.notna(peak_time):
+            peak_value = avg_db.loc[peak_time]
+            ax.annotate(
+                f"Peak {peak_value:.1f} dB",
+                xy=(peak_time, peak_value),
+                xytext=(10, 20),
+                textcoords="offset points",
+                arrowprops=dict(arrowstyle="->", color="#26547C"),
+                fontsize=9,
+                color="#26547C",
+            )
+
+        ax.set_title("Stacked Noise Profile & Focus Windows", fontsize=12, fontweight="bold")
+        ax.set_ylabel("Average dB (15 min bins)")
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %H:%M"))
+        ax.tick_params(axis="x", rotation=30)
+        ax.grid(True, which="major", axis="y", linestyle="--", alpha=0.3)
+        if legend_handles:
+            ax.legend(handles=legend_handles, loc="upper left", ncol=2, fontsize=9)
+
+    def _plot_interruption_heatmap(self, ax, df_logs):
+        if df_logs.empty:
+            ax.text(0.5, 0.5, "No noise activity to map", ha="center", va="center", fontsize=11)
+            ax.set_axis_off()
+            return
+
+        logs = df_logs.copy()
+        logs["hour"] = logs["timestamp"].dt.hour
+        logs["weekday"] = logs["timestamp"].dt.day_name()
+        logs["noise_category"] = logs["noise_category"].fillna("Unknown")
+
+        noisy_mask = logs["noise_category"].str.lower() == "noisy"
+        focus_events = logs[noisy_mask]
+        intensity_label = "Noisy event count"
+
+        if focus_events.empty and "db_level" in logs:
+            valid_db = logs["db_level"].dropna()
+            if not valid_db.empty:
+                threshold = np.percentile(valid_db, 80)
+                focus_events = logs[logs["db_level"] >= threshold]
+                intensity_label = "High dB event count"
+
+        if focus_events.empty:
+            ax.text(0.5, 0.5, "No intense noise patterns detected", ha="center", va="center", fontsize=11)
+            ax.set_axis_off()
+            return
+
+        heatmap = (
+            focus_events.groupby(["weekday", "hour"])
+            .size()
+            .unstack(fill_value=0)
+            .reindex([
+                "Monday",
+                "Tuesday",
+                "Wednesday",
+                "Thursday",
+                "Friday",
+                "Saturday",
+                "Sunday",
+            ],
+                     fill_value=0)
+        )
+
+        im = ax.imshow(heatmap.values, aspect="auto", cmap="YlOrRd")
+        ax.set_title("Interruption Frequency Heatmap", fontsize=12, fontweight="bold")
+        ax.set_xlabel("Hour of Day")
+        ax.set_ylabel("Weekday")
+        ax.set_xticks(range(len(heatmap.columns)))
+        ax.set_xticklabels(heatmap.columns, rotation=0)
+        ax.set_yticks(range(len(heatmap.index)))
+        ax.set_yticklabels(heatmap.index)
+
+        max_idx = np.unravel_index(np.argmax(heatmap.values), heatmap.values.shape)
+        max_value = heatmap.values[max_idx]
+        if max_value > 0:
+            y, x = max_idx
+            ax.annotate(
+                f"🔥 Peak: {int(max_value)}",
+                xy=(x, y),
+                xytext=(5, -12),
+                textcoords="offset points",
+                color="#b83227",
+                fontsize=9,
+                fontweight="bold",
+            )
+
+        cbar = ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label(intensity_label)
+
+    def _plot_noise_completion_strip(self, ax, df_logs, df_sessions):
+        if df_sessions.empty:
+            ax.text(0.5, 0.5, "No Pomodoro sessions yet", ha="center", va="center", fontsize=11)
+            ax.set_axis_off()
+            return
+
+        if "session_id" not in df_logs:
+            ax.text(0.5, 0.5, "Session linkage missing in logs", ha="center", va="center", fontsize=11)
+            ax.set_axis_off()
+            return
+
+        session_logs = df_logs.dropna(subset=["session_id", "db_level"]).copy()
+        session_logs["session_id"] = pd.to_numeric(session_logs["session_id"], errors="coerce")
+        session_logs.dropna(subset=["session_id"], inplace=True)
+        if session_logs.empty:
+            ax.text(0.5, 0.5, "No noise readings captured during sessions", ha="center", va="center", fontsize=11)
+            ax.set_axis_off()
+            return
+
+        session_logs["session_id"] = session_logs["session_id"].astype(int)
+        df_sessions = df_sessions.dropna(subset=["session_id"]).copy()
+        df_sessions["session_id"] = pd.to_numeric(df_sessions["session_id"], errors="coerce")
+        df_sessions.dropna(subset=["session_id"], inplace=True)
+        if df_sessions.empty:
+            ax.text(0.5, 0.5, "Session metadata unavailable", ha="center", va="center", fontsize=11)
+            ax.set_axis_off()
+            return
+
+        df_sessions["session_id"] = df_sessions["session_id"].astype(int)
+        avg_db_by_session = (
+            session_logs.groupby("session_id")["db_level"].mean().reset_index(name="avg_db")
+        )
+        merged = avg_db_by_session.merge(
+            df_sessions[["session_id", "status"]], on="session_id", how="inner"
+        )
+
+        if merged.empty:
+            ax.text(0.5, 0.5, "No completed sessions with noise data", ha="center", va="center", fontsize=11)
+            ax.set_axis_off()
+            return
+
+        merged["status"] = merged["status"].fillna("Unknown")
+        statuses = merged["status"].unique()
+        colors = {
+            "Completed": "#06d6a0",
+            "Running": "#118ab2",
+            "Interrupted": "#ffd166",
+            "Cancelled": "#ef476f",
+            "Abandoned": "#ef476f",
+            "Unknown": "#8d99ae",
+        }
+
+        legend_handles = []
+        for idx, status in enumerate(statuses):
+            values = merged.loc[merged["status"] == status, "avg_db"].to_numpy()
+            x_positions = np.full_like(values, idx, dtype=float)
+            jitter = np.random.uniform(-0.18, 0.18, size=len(values))
+            color = colors.get(status, "#577590")
+            ax.scatter(
+                x_positions + jitter,
+                values,
+                color=color,
+                alpha=0.75,
+                edgecolor="#1f1f1f",
+                linewidth=0.4,
+                label=status,
+            )
+            legend_handles.append(mpatches.Patch(color=color, label=status))
+
+        overall_mean = merged["avg_db"].mean()
+        ax.axhline(overall_mean, color="#073b4c", linestyle="--", linewidth=1, alpha=0.6)
+        ax.annotate(
+            f"Mean session dB: {overall_mean:.1f}",
+            xy=(0.02, overall_mean),
+            xycoords=("axes fraction", "data"),
+            textcoords="offset points",
+            xytext=(5, -12),
+            color="#073b4c",
+            fontsize=9,
+        )
+
+        ax.set_title("Noise vs. Session Outcome", fontsize=12, fontweight="bold")
+        ax.set_ylabel("Average dB per Session")
+        ax.set_xticks(range(len(statuses)))
+        ax.set_xticklabels(statuses, rotation=20)
+        ax.grid(True, axis="y", linestyle=":", alpha=0.3)
+        ax.legend(handles=legend_handles, title="Session Status", loc="upper right")
+
     # ---------- TAB 2 : Load Visual Charts ----------
     def load_charts(self):
         for widget in self.chart_frame.winfo_children():
@@ -1110,14 +1357,9 @@ class DetailedReportPage(tk.Frame):
                      font=("Arial", 12)).pack(pady=30)
             return
 
-        # === Build charts ===
-        fig, axes = plt.subplots(2, 2, figsize=(10, 6))
-        fig.suptitle(f"Noise & Focus Analytics ({start.date()} → {end.date()})",
-                     fontsize=14, fontweight="bold")
-
-        df_logs["date"] = pd.to_datetime(df_logs["timestamp"]).dt.date
         df_logs["db_level"] = pd.to_numeric(df_logs["db_level"], errors="coerce")
-        df_logs["confidence"] = pd.to_numeric(df_logs.get("confidence"), errors="coerce")
+        if "confidence" in df_logs:
+            df_logs["confidence"] = pd.to_numeric(df_logs["confidence"], errors="coerce")
         df_logs.dropna(subset=["db_level"], inplace=True)
 
         if df_logs.empty:
@@ -1125,41 +1367,24 @@ class DetailedReportPage(tk.Frame):
                      font=("Arial", 12)).pack(pady=30)
             return
 
-        daily_avg = df_logs.groupby("date")["db_level"].mean()
-        axes[0, 0].plot(daily_avg.index, daily_avg.values, marker="o", color="steelblue")
-        axes[0, 0].set_title("Average dB Over Time")
-        axes[0, 0].set_ylabel("dB Level")
-        axes[0, 0].tick_params(axis="x", rotation=45)
+        fig = plt.figure(figsize=(12, 7))
+        gs = fig.add_gridspec(2, 2, height_ratios=[2.4, 1.8])
+        ax_trend = fig.add_subplot(gs[0, :])
+        ax_heat = fig.add_subplot(gs[1, 0])
+        ax_strip = fig.add_subplot(gs[1, 1])
 
-        counts = df_logs["noise_category"].value_counts()
-        axes[0, 1].pie(counts, labels=counts.index, autopct="%1.1f%%", startangle=90,
-                       colors=["#9ad3bc", "#f5b971", "#f08080"])
-        axes[0, 1].set_title("Noise Category Distribution")
+        self._plot_noise_trend(ax_trend, df_logs, df_sessions)
+        self._plot_interruption_heatmap(ax_heat, df_logs)
+        self._plot_noise_completion_strip(ax_strip, df_logs, df_sessions)
 
-        if not df_sessions.empty:
-            df_sessions["duration"] = (df_sessions["end_time"] - df_sessions["start_time"]).dt.total_seconds() / 60
-            df_sessions.dropna(subset=["duration"], inplace=True)
-            if not df_sessions.empty:
-                session_labels = df_sessions["start_time"].dt.strftime("%m-%d %H:%M")
-                axes[1, 0].bar(session_labels, df_sessions["duration"], color="#77aaff")
-                axes[1, 0].tick_params(axis="x", rotation=45)
-            else:
-                axes[1, 0].text(0.5, 0.5, "No completed sessions", ha="center", va="center")
-            axes[1, 0].set_title("Focus Duration per Session")
-            axes[1, 0].set_ylabel("Minutes")
-        else:
-            axes[1, 0].text(0.5, 0.5, "No completed sessions", ha="center", va="center")
+        display_end = (end - pd.Timedelta(seconds=1)).date()
+        fig.suptitle(
+            f"Noise & Focus Analytics ({start.date()} → {display_end})",
+            fontsize=14,
+            fontweight="bold",
+        )
+        fig.subplots_adjust(top=0.9, hspace=0.45, wspace=0.28)
 
-        scatter_data = df_logs.dropna(subset=["confidence"])
-        if not scatter_data.empty:
-            axes[1, 1].scatter(scatter_data["db_level"], scatter_data["confidence"], alpha=0.6, color="#ee6666")
-        else:
-            axes[1, 1].text(0.5, 0.5, "No confidence scores recorded", ha="center", va="center")
-        axes[1, 1].set_title("Noise Level vs Model Confidence")
-        axes[1, 1].set_xlabel("dB Level")
-        axes[1, 1].set_ylabel("YAMNet Confidence")
-
-        plt.tight_layout(rect=[0, 0, 1, 0.95])
         canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
         canvas.draw()
         canvas.get_tk_widget().pack(fill="both", expand=True)
