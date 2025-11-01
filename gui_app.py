@@ -1058,11 +1058,22 @@ class DetailedReportPage(tk.Frame):
         # Auto-adjust the visible range the first time charts are loaded
         min_ts = df_logs["timestamp"].min()
         max_ts = df_logs["timestamp"].max()
+        min_date = min_ts.date()
+        max_date = max_ts.date()
 
         if not hasattr(self, "_chart_range_initialized") or not self._chart_range_initialized:
-            self.start_date.set_date(min_ts.date())
-            self.end_date.set_date(max_ts.date())
+            self.start_date.set_date(min_date)
+            self.end_date.set_date(max_date)
             self._chart_range_initialized = True
+        else:
+            current_start = self.start_date.get_date()
+            current_end = self.end_date.get_date()
+
+            if current_start > min_date:
+                self.start_date.set_date(min_date)
+
+            if current_end < max_date:
+                self.end_date.set_date(max_date)
 
         # Ensure start <= end even if the user selects them in reverse order
         start_date_value = self.start_date.get_date()
