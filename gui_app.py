@@ -16,7 +16,15 @@ from io import StringIO
 mem_guard = MemoryGuard(threshold_mb=5000, check_interval_sec=5)
 mem_guard.start()
 # === import your backend code ===
-from FYP import init_storage, init_reports_table, get_db_level, noise_category, classify_sound, save_noise_log
+from FYP import (
+    init_storage,
+    init_reports_table,
+    get_db_level,
+    noise_category,
+    classify_sound,
+    save_noise_log,
+    today_local_bounds,
+)
 # ⛔️ DO NOT import the AI generator here anymore (it loads the model at startup)
 # from ai_report_generator_local import generate_ai_report
 
@@ -640,10 +648,17 @@ class ReportPage(tk.Frame):
             conn = get_connection()
             cursor = conn.cursor()
             today = date.today()
-            today_str = today.strftime("%Y-%m-%d")  # ✅ Convert to string
+            start_iso, end_iso = today_local_bounds()
 
             # Total logs and average dB
-            cursor.execute("SELECT COUNT(*), AVG(db_level) FROM NoiseLog WHERE DATE(timestamp)=?", (today_str,))
+            cursor.execute(
+                """
+                SELECT COUNT(*), AVG(db_level)
+                FROM NoiseLog
+                WHERE timestamp >= ? AND timestamp < ?
+                """,
+                (start_iso, end_iso),
+            )
             total_logs, avg_db = cursor.fetchone()
             if not total_logs:
                 conn.close()
@@ -654,16 +669,17 @@ class ReportPage(tk.Frame):
             # Noise category counts
             cursor.execute("""
                 SELECT noise_category, COUNT(*) FROM NoiseLog
-                WHERE DATE(timestamp)=? GROUP BY noise_category
-            """, (today_str,))
+                WHERE timestamp >= ? AND timestamp < ?
+                GROUP BY noise_category
+            """, (start_iso, end_iso))
             category_counts = {row[0]: row[1] for row in cursor.fetchall()}
 
             # Most frequent sound label
             cursor.execute("""
                 SELECT label, COUNT(*) FROM NoiseLog
-                WHERE DATE(timestamp)=?
+                WHERE timestamp >= ? AND timestamp < ?
                 GROUP BY label ORDER BY COUNT(*) DESC LIMIT 1
-            """, (today_str,))
+            """, (start_iso, end_iso))
             row = cursor.fetchone()
             top_label = row[0] if row else "Unknown"
 
@@ -672,8 +688,8 @@ class ReportPage(tk.Frame):
                 SELECT COUNT(*),
                        SUM(strftime('%s', COALESCE(end_time, start_time)) - strftime('%s', start_time)) / 60.0
                 FROM PomodoroSession
-                WHERE DATE(start_time)=? AND status='Completed'
-            """, (today_str,))
+                WHERE start_time >= ? AND start_time < ? AND status='Completed'
+            """, (start_iso, end_iso))
             session_count, focus_minutes = cursor.fetchone()
             focus_minutes = focus_minutes or 0
 
