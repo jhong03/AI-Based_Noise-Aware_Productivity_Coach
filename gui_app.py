@@ -1059,7 +1059,7 @@ class DetailedReportPage(tk.Frame):
             return
 
         logs = df_logs.sort_values("timestamp").set_index("timestamp")
-        window = "15T"
+        window = "15min"
         category_levels = (
             logs.groupby([pd.Grouper(freq=window), "noise_category"])["db_level"]
             .mean()
@@ -1195,7 +1195,7 @@ class DetailedReportPage(tk.Frame):
         if max_value > 0:
             y, x = max_idx
             ax.annotate(
-                f"🔥 Peak: {int(max_value)}",
+                f"Peak: {int(max_value)}",
                 xy=(x, y),
                 xytext=(5, -12),
                 textcoords="offset points",
