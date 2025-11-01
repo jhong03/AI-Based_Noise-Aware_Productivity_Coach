@@ -1081,26 +1081,19 @@ class DetailedReportPage(tk.Frame):
             self.start_date.set_date(min_date)
             self.end_date.set_date(max_date)
             self._chart_range_initialized = True
-        else:
-            current_start = self.start_date.get_date()
-            current_end = self.end_date.get_date()
 
-            if current_start > min_date:
-                self.start_date.set_date(min_date)
-
-            if current_end < max_date:
-                self.end_date.set_date(max_date)
-
-        # Ensure start <= end even if the user selects them in reverse order
+        # Ensure start <= end for filtering while keeping the user's selection intact
         start_date_value = self.start_date.get_date()
         end_date_value = self.end_date.get_date()
-        if start_date_value > end_date_value:
-            start_date_value, end_date_value = end_date_value, start_date_value
-            self.start_date.set_date(start_date_value)
-            self.end_date.set_date(end_date_value)
+        if start_date_value <= end_date_value:
+            range_start = start_date_value
+            range_end = end_date_value
+        else:
+            range_start = end_date_value
+            range_end = start_date_value
 
-        start = pd.to_datetime(start_date_value)
-        end = pd.to_datetime(end_date_value) + pd.Timedelta(days=1)
+        start = pd.to_datetime(range_start)
+        end = pd.to_datetime(range_end) + pd.Timedelta(days=1)
         df_logs = df_logs[(df_logs["timestamp"] >= start) & (df_logs["timestamp"] < end)]
 
         if not df_sessions.empty:
