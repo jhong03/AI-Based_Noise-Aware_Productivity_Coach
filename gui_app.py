@@ -27,6 +27,7 @@ from FYP import (
     classify_sound,
     save_noise_log,
     today_local_bounds,
+    DB_PATH,
 )
 # ⛔️ DO NOT import the AI generator here anymore (it loads the model at startup)
 # from ai_report_generator_local import generate_ai_report
@@ -42,8 +43,7 @@ background_retrain(interval_hours=24)
 # === Local DB connection helper ===
 def get_connection():
     """Return a new SQLite connection to the same DB used by FYP.py."""
-    db_path = os.path.join(os.path.expanduser("~"), "Documents", "NoiseLogs", "noise_focus.db")
-    return sqlite3.connect(db_path, timeout=10, check_same_thread=False)
+    return sqlite3.connect(DB_PATH, timeout=10, check_same_thread=False)
 
 
 # === Tkinter App ===
@@ -955,7 +955,7 @@ class DetailedReportPage(tk.Frame):
         super().__init__(parent)
         self.controller = controller
         colors = controller.themes[controller.current_theme]
-        self.db_path = os.path.join(os.path.expanduser("~"), "Documents", "NoiseLogs", "noise_focus.db")
+        self._chart_range_initialized = False
 
         tk.Label(self, text="📊 Detailed Productivity Insights", font=("Arial", 16, "bold"),
                  bg=colors["bg"], fg=colors["fg"]).pack(pady=10)
@@ -1010,16 +1010,21 @@ class DetailedReportPage(tk.Frame):
         self.chart_frame = tk.Frame(tab_charts, bg=colors["bg"])
         self.chart_frame.pack(fill="both", expand=True, padx=20, pady=10)
 
+    def on_show(self):
+        """Auto-refresh analytics when the page is displayed."""
+        self.load_charts()
+
     # ---------- TAB 1 : Load AI Reports ----------
     def load_reports(self):
         selected_date = self.date_entry.get_date().strftime("%Y-%m-%d")
         self.text_area.delete(1.0, tk.END)
-        if not os.path.exists(self.db_path):
-            self.text_area.insert(tk.END, f"⚠️ Database not found at:\n{self.db_path}")
+        if not os.path.exists(DB_PATH):
+            self.text_area.insert(tk.END, f"⚠️ Database not found at:\n{DB_PATH}")
             return
 
+        conn = None
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = get_connection()
             c = conn.cursor()
             c.execute("""
                 SELECT date, summary, ai_report, created_at
@@ -1028,10 +1033,12 @@ class DetailedReportPage(tk.Frame):
                 ORDER BY created_at DESC
             """, (selected_date,))
             rows = c.fetchall()
-            conn.close()
         except Exception as e:
             self.text_area.insert(tk.END, f"⚠️ Error loading reports:\n{e}")
             return
+        finally:
+            if conn is not None:
+                conn.close()
 
         if not rows:
             self.text_area.insert(tk.END, f"No reports found for {selected_date}.\n")
@@ -1293,15 +1300,18 @@ class DetailedReportPage(tk.Frame):
         for widget in self.chart_frame.winfo_children():
             widget.destroy()
 
+        conn = None
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = get_connection()
             df_logs = pd.read_sql_query("SELECT * FROM NoiseLog", conn)
             df_sessions = pd.read_sql_query("SELECT * FROM PomodoroSession", conn)
-            conn.close()
         except Exception as e:
             tk.Label(self.chart_frame, text=f"⚠️ Failed to load data: {e}",
                      font=("Arial", 12)).pack(pady=30)
             return
+        finally:
+            if conn is not None:
+                conn.close()
 
         if df_logs.empty:
             tk.Label(self.chart_frame, text="No noise data available yet.",
