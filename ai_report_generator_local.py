@@ -103,6 +103,16 @@ def _parse_summary_metrics(summary_text: str) -> dict:
     return metrics
 
 
+def _extract_first_int(text: str) -> Optional[int]:
+    """Return the first integer value found in ``text`` if present."""
+    if not text:
+        return None
+    match = re.search(r"([0-9]+)", text)
+    if match:
+        return int(match.group(1))
+    return None
+
+
 def _build_fallback_response(summary_text: str, preferred_name: str) -> str:
     metrics = _parse_summary_metrics(summary_text)
 
@@ -146,22 +156,31 @@ def _build_fallback_response(summary_text: str, preferred_name: str) -> str:
             "• Keep a ready playlist or noise buffer for surprise spikes so interruptions don't derail your momentum."
         )
 
-    if metrics.get("pomodoros") or metrics.get("focused_minutes"):
-        focus_detail = []
-        if metrics.get("pomodoros"):
-            focus_detail.append(f"{metrics['pomodoros']} Pomodoros")
-        if metrics.get("pomodoro_detail"):
-            focus_detail.append(metrics['pomodoro_detail'])
-        elif metrics.get("focused_minutes"):
-            focus_detail.append(f"{metrics['focused_minutes']} min focused work")
+    pomodoros_str = metrics.get("pomodoros")
+    pomodoros_count = int(pomodoros_str) if pomodoros_str and pomodoros_str.isdigit() else None
 
+    focus_minutes_str = metrics.get("focused_minutes")
+    focus_minutes = int(focus_minutes_str) if focus_minutes_str and focus_minutes_str.isdigit() else None
+
+    detail_text = metrics.get("pomodoro_detail")
+    detail_minutes = _extract_first_int(detail_text) if detail_text else None
+
+    focus_detail = []
+    if pomodoros_count and pomodoros_count > 0:
+        focus_detail.append(f"{pomodoros_count} Pomodoros")
+    if detail_text and (detail_minutes is None or detail_minutes > 0):
+        focus_detail.append(detail_text)
+    elif focus_minutes and focus_minutes > 0:
+        focus_detail.append(f"{focus_minutes} min focused work")
+
+    if focus_detail:
         focus_text = " and ".join(focus_detail)
         bullets.append(
             f"• Sustain that {focus_text}; pair each session with a brief reset so the routine stays energizing."
         )
     else:
         bullets.append(
-            "• Use brief breaks every 50–60 minutes to refresh attention and reinforce consistent performance."
+            "• Build momentum with one protected Pomodoro today and log the focused minutes to start a positive streak."
         )
 
     bullets.append(
