@@ -3,6 +3,7 @@ import sys
 import sqlite3
 import time
 from datetime import datetime, date, timedelta, timezone
+from typing import Optional
 import csv
 import numpy as np
 import sounddevice as sd
@@ -20,6 +21,61 @@ from collections import deque
 def now_local():
     """Return an aware datetime in local timezone."""
     return datetime.now().astimezone()
+
+
+def _format_offset(offset: Optional[timedelta]) -> str:
+    """Return "+HH:MM" or "-HH:MM" for the supplied offset."""
+    if offset is None:
+        return "+00:00"
+
+    total_minutes = int(offset.total_seconds() // 60)
+    sign = "+" if total_minutes >= 0 else "-"
+    total_minutes = abs(total_minutes)
+    hours, minutes = divmod(total_minutes, 60)
+    return f"{sign}{hours:02d}:{minutes:02d}"
+
+
+def ensure_iso8601_with_offset(timestamp: Optional[str]) -> str:
+    """Normalize timestamps so they compare lexicographically in SQLite."""
+    if not timestamp:
+        return now_iso_local()
+
+    ts = timestamp.strip()
+
+    # Attempt the happy path first.
+    try:
+        datetime.fromisoformat(ts)
+        return ts
+    except ValueError:
+        pass
+
+    candidates = [ts]
+
+    if "T" not in ts and " " in ts:
+        candidates.append(ts.replace(" ", "T", 1))
+
+    cleaned = candidates[-1]
+
+    if cleaned.endswith("Z"):
+        cleaned = cleaned[:-1] + "+00:00"
+
+    try:
+        datetime.fromisoformat(cleaned)
+        return cleaned
+    except ValueError:
+        pass
+
+    offset_str = _format_offset(now_local().utcoffset())
+    if len(cleaned) <= 19 or cleaned[19] not in "+-":
+        cleaned = f"{cleaned}{offset_str}"
+
+    # Final guard – if parsing still fails, fall back to current time.
+    try:
+        datetime.fromisoformat(cleaned)
+        return cleaned
+    except ValueError:
+        return now_iso_local()
+
 
 def now_iso_local():
     """ISO 8601 with offset, e.g., 2025-10-13T19:15:02+08:00"""
@@ -245,6 +301,33 @@ def init_storage():
     conn.close()
     print(f"✅ Storage initialized at {BASE_DIR}")
 
+    normalize_noise_log_timestamps()
+
+
+def normalize_noise_log_timestamps():
+    """Bring legacy NoiseLog timestamps up to ISO 8601 with offsets."""
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT log_id, timestamp FROM NoiseLog")
+        rows = cursor.fetchall()
+        updates = []
+        for log_id, ts in rows:
+            normalized = ensure_iso8601_with_offset(ts)
+            if normalized != ts:
+                updates.append((normalized, log_id))
+
+        if updates:
+            cursor.executemany("UPDATE NoiseLog SET timestamp=? WHERE log_id=?", updates)
+            conn.commit()
+            print(f"🔁 Normalized {len(updates)} legacy noise log timestamps")
+    except Exception as exc:
+        print(f"⚠️ Timestamp normalization skipped: {exc}")
+    finally:
+        if conn is not None:
+            conn.close()
+
 def init_reports_table():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -319,7 +402,7 @@ def classify_sound(audio_chunk):
 # =============================
 
 def save_noise_log(db_level, category, label, confidence, session_id=None):
-    timestamp = now_iso_local()  # <<< CHANGED
+    timestamp = ensure_iso8601_with_offset(now_iso_local())
 
     # SQLite can momentarily lock when the AI report writer stores results.
     # Retry a few times instead of letting the passive monitor thread crash.
