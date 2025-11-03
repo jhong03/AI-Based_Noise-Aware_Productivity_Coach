@@ -31,6 +31,7 @@ from FYP import (
     today_local_bounds,
     BASE_DIR,
     DB_PATH,
+    LOG_DIR,
 )
 # ⛔️ DO NOT import the AI generator here anymore (it loads the model at startup)
 # from ai_report_generator_local import generate_ai_report
@@ -1233,6 +1234,74 @@ class DetailedReportPage(tk.Frame):
             self.text_area.insert(tk.END, "-"*90 + "\n\n")
 
     # ---------- Chart Helpers ----------
+    def _load_logs_from_files(self):
+        """Parse raw log files when the NoiseLog table is empty."""
+        log_dir = Path(LOG_DIR)
+        if not log_dir.exists():
+            return pd.DataFrame()
+
+        records = []
+        for logfile in sorted(log_dir.glob("*.txt")):
+            try:
+                with open(logfile, "r", encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+
+                        parts = [chunk.strip() for chunk in line.split("|")]
+                        if len(parts) < 4:
+                            continue
+
+                        raw_ts, raw_db, raw_category, raw_label = parts[:4]
+
+                        timestamp = pd.to_datetime(raw_ts, utc=True, errors="coerce")
+                        if pd.isna(timestamp) and "T" not in raw_ts and " " in raw_ts:
+                            timestamp = pd.to_datetime(raw_ts.replace(" ", "T", 1), utc=True, errors="coerce")
+                        if pd.isna(timestamp):
+                            continue
+
+                        db_value = pd.to_numeric(raw_db.replace("dB", "").strip(), errors="coerce")
+                        if pd.isna(db_value):
+                            continue
+
+                        category = (raw_category or "").strip()
+                        if not category:
+                            category = "Unknown"
+                        else:
+                            lowered = category.lower()
+                            if lowered in {"quiet", "moderate", "noisy"}:
+                                category = lowered.capitalize()
+
+                        label = raw_label
+                        confidence = None
+                        if "(" in raw_label and raw_label.endswith(")"):
+                            label_part, confidence_part = raw_label.rsplit("(", 1)
+                            label = label_part.strip()
+                            confidence = pd.to_numeric(confidence_part.rstrip(")"), errors="coerce")
+                        label = label.strip()
+
+                        records.append(
+                            {
+                                "timestamp": timestamp,
+                                "db_level": float(db_value),
+                                "noise_category": category,
+                                "label": label,
+                                "confidence": confidence,
+                                "session_id": None,
+                            }
+                        )
+            except OSError:
+                continue
+
+        if not records:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(records)
+        df.sort_values("timestamp", inplace=True)
+        df.reset_index(drop=True, inplace=True)
+        return df
+
     def _plot_noise_trend(self, ax, df_logs, df_sessions):
         if df_logs.empty:
             ax.text(0.5, 0.5, "No readings available", ha="center", va="center", fontsize=11)
@@ -1481,22 +1550,34 @@ class DetailedReportPage(tk.Frame):
         for widget in self.chart_frame.winfo_children():
             widget.destroy()
 
+        colors = self.controller.themes[self.controller.current_theme]
+        using_file_logs = False
+        db_error = None
+
         conn = None
         try:
             conn = get_connection()
             df_logs = pd.read_sql_query("SELECT * FROM NoiseLog", conn)
             df_sessions = pd.read_sql_query("SELECT * FROM PomodoroSession", conn)
         except Exception as e:
-            tk.Label(self.chart_frame, text=f"⚠️ Failed to load data: {e}",
-                     font=("Arial", 12)).pack(pady=30)
-            return
+            db_error = e
+            df_logs = pd.DataFrame()
+            df_sessions = pd.DataFrame()
         finally:
             if conn is not None:
                 conn.close()
 
         if df_logs.empty:
-            tk.Label(self.chart_frame, text="No noise data available yet.",
-                     font=("Arial", 12)).pack(pady=30)
+            df_logs = self._load_logs_from_files()
+            df_sessions = pd.DataFrame()
+            using_file_logs = not df_logs.empty
+
+        if df_logs.empty:
+            message = "No noise data available yet."
+            if db_error is not None:
+                message = f"⚠️ Failed to load data: {db_error}"
+            tk.Label(self.chart_frame, text=message,
+                     font=("Arial", 12), bg=colors["bg"], fg=colors["fg"]).pack(pady=30)
             return
 
         # === Robust timestamp parsing with UTC normalization ===
@@ -1559,9 +1640,23 @@ class DetailedReportPage(tk.Frame):
                      font=("Arial", 12)).pack(pady=30)
             return
 
-        df_logs["db_level"] = pd.to_numeric(df_logs["db_level"], errors="coerce")
+        db_values = df_logs["db_level"]
+        if not np.issubdtype(db_values.dtype, np.number):
+            db_values = (
+                db_values.astype(str)
+                .str.replace("dB", "", regex=False)
+                .str.replace(r"[^\d\.\-]", "", regex=True)
+            )
+        df_logs["db_level"] = pd.to_numeric(db_values, errors="coerce")
+
         if "confidence" in df_logs:
-            df_logs["confidence"] = pd.to_numeric(df_logs["confidence"], errors="coerce")
+            conf_values = df_logs["confidence"]
+            if not np.issubdtype(conf_values.dtype, np.number):
+                conf_values = (
+                    conf_values.astype(str)
+                    .str.replace(r"[^\d\.\-]", "", regex=True)
+                )
+            df_logs["confidence"] = pd.to_numeric(conf_values, errors="coerce")
         df_logs.dropna(subset=["db_level"], inplace=True)
 
         if df_logs.empty:
@@ -1586,6 +1681,15 @@ class DetailedReportPage(tk.Frame):
             fontweight="bold",
         )
         fig.subplots_adjust(top=0.9, hspace=0.45, wspace=0.28)
+
+        if using_file_logs:
+            fig.text(
+                0.01,
+                0.02,
+                "ℹ️ Displaying analytics from log files (database entries unavailable).",
+                fontsize=9,
+                color="#555555",
+            )
 
         canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
         canvas.draw()
