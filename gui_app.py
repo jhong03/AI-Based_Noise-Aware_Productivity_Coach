@@ -54,7 +54,8 @@ class NoiseAwareApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Noise-Aware Productivity Coach")
-        self.geometry("1100x700")
+        self.default_geometry = "1100x700"
+        self.geometry(self.default_geometry)
         self.resizable(False, False)
 
         # Theme configuration
@@ -129,9 +130,16 @@ class NoiseAwareApp(tk.Tk):
 
     def show_frame(self, page):
         frame = self.frames[page]
+        self._apply_geometry_for_frame(frame)
         if hasattr(frame, "on_show"):
             frame.on_show()
         frame.tkraise()
+
+    def _apply_geometry_for_frame(self, frame):
+        """Resize the root window based on the active frame."""
+        desired_geometry = getattr(frame, "desired_geometry", self.default_geometry)
+        if desired_geometry:
+            self.geometry(desired_geometry)
 
     def passive_monitor(self):
         """Continuously record until app closes or muted."""
@@ -548,6 +556,8 @@ class NoiseAwareApp(tk.Tk):
 
 # === Main Menu Page ===
 class MainMenu(tk.Frame):
+    desired_geometry = "800x600"
+
     def __init__(self, parent, controller):
         super().__init__(parent)
 
@@ -680,6 +690,8 @@ class MainMenu(tk.Frame):
 
 # === Pomodoro Page ===
 class PomodoroPage(tk.Frame):
+    desired_geometry = "1000x700"
+
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
@@ -739,6 +751,8 @@ class PomodoroPage(tk.Frame):
 
 # === Report Page (Optimized with Loading Spinner and Faster AI Report) ===
 class ReportPage(tk.Frame):
+    desired_geometry = "1100x700"
+
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
@@ -941,6 +955,8 @@ class ReportPage(tk.Frame):
 
 # === Settings Page ===
 class SettingsPage(tk.Frame):
+    desired_geometry = "1100x720"
+
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
@@ -1114,6 +1130,8 @@ class SettingsPage(tk.Frame):
 
 # === Detailed Report Page (Tabbed View: AI Reports + Analytics) ===
 class DetailedReportPage(tk.Frame):
+    desired_geometry = "1200x800"
+
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
