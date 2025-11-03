@@ -1640,9 +1640,23 @@ class DetailedReportPage(tk.Frame):
                      font=("Arial", 12)).pack(pady=30)
             return
 
-        df_logs["db_level"] = pd.to_numeric(df_logs["db_level"], errors="coerce")
+        db_values = df_logs["db_level"]
+        if not np.issubdtype(db_values.dtype, np.number):
+            db_values = (
+                db_values.astype(str)
+                .str.replace("dB", "", regex=False)
+                .str.replace(r"[^\d\.\-]", "", regex=True)
+            )
+        df_logs["db_level"] = pd.to_numeric(db_values, errors="coerce")
+
         if "confidence" in df_logs:
-            df_logs["confidence"] = pd.to_numeric(df_logs["confidence"], errors="coerce")
+            conf_values = df_logs["confidence"]
+            if not np.issubdtype(conf_values.dtype, np.number):
+                conf_values = (
+                    conf_values.astype(str)
+                    .str.replace(r"[^\d\.\-]", "", regex=True)
+                )
+            df_logs["confidence"] = pd.to_numeric(conf_values, errors="coerce")
         df_logs.dropna(subset=["db_level"], inplace=True)
 
         if df_logs.empty:
