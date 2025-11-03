@@ -42,39 +42,45 @@ def ensure_iso8601_with_offset(timestamp: Optional[str]) -> str:
 
     ts = timestamp.strip()
 
-    # Attempt the happy path first.
-    try:
-        datetime.fromisoformat(ts)
-        return ts
-    except ValueError:
-        pass
+    def _finalize(candidate: str) -> Optional[str]:
+        try:
+            parsed = datetime.fromisoformat(candidate)
+        except ValueError:
+            return None
 
-    candidates = [ts]
+        if parsed.tzinfo is None:
+            local_tz = now_local().tzinfo or timezone.utc
+            parsed = parsed.replace(tzinfo=local_tz)
 
+        return parsed.isoformat(timespec="seconds")
+
+    attempts = [ts]
     if "T" not in ts and " " in ts:
-        candidates.append(ts.replace(" ", "T", 1))
+        attempts.append(ts.replace(" ", "T", 1))
 
-    cleaned = candidates[-1]
+    result = None
+    cleaned = ts
+    for candidate in attempts:
+        result = _finalize(candidate)
+        cleaned = candidate
+        if result is not None:
+            return result
 
     if cleaned.endswith("Z"):
         cleaned = cleaned[:-1] + "+00:00"
-
-    try:
-        datetime.fromisoformat(cleaned)
-        return cleaned
-    except ValueError:
-        pass
+        result = _finalize(cleaned)
+        if result is not None:
+            return result
 
     offset_str = _format_offset(now_local().utcoffset())
     if len(cleaned) <= 19 or cleaned[19] not in "+-":
-        cleaned = f"{cleaned}{offset_str}"
+        candidate_with_offset = f"{cleaned}{offset_str}"
+        result = _finalize(candidate_with_offset)
+        if result is not None:
+            return result
 
-    # Final guard – if parsing still fails, fall back to current time.
-    try:
-        datetime.fromisoformat(cleaned)
-        return cleaned
-    except ValueError:
-        return now_iso_local()
+    fallback = _finalize(now_iso_local())
+    return fallback if fallback is not None else now_iso_local()
 
 
 def now_iso_local():
