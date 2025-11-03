@@ -568,9 +568,6 @@ class MainMenu(tk.Frame):
         self.nav_frame = tk.Frame(self)
         self.nav_frame.pack(fill="x", pady=(10, 5))
 
-        button_container = tk.Frame(self.nav_frame)
-        button_container.pack()
-
         button_config = [
             ("View Reports 📑", lambda: controller.show_frame(ReportPage)),
             ("Open Settings ⚙️", lambda: controller.show_frame(SettingsPage)),
@@ -579,7 +576,7 @@ class MainMenu(tk.Frame):
 
         for text, command in button_config:
             tk.Button(
-                button_container,
+                self.nav_frame,
                 text=text,
                 command=command,
                 cursor="hand2",
