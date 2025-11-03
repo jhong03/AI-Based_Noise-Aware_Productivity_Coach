@@ -580,6 +580,8 @@ class MainMenu(tk.Frame):
                 text=icon_text,
                 font=("Arial", 16),
                 cursor="hand2",
+                width=3,
+                anchor="center",
             )
             icon_label.pack(anchor="e", pady=5)
             icon_label.bind("<Button-1>", handler)
