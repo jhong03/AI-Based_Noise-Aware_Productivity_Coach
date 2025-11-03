@@ -5,6 +5,8 @@ import time
 import sqlite3
 from datetime import datetime, date
 import os
+import json
+from pathlib import Path
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import matplotlib.patches as mpatches
@@ -27,6 +29,7 @@ from FYP import (
     classify_sound,
     save_noise_log,
     today_local_bounds,
+    BASE_DIR,
     DB_PATH,
 )
 # ⛔️ DO NOT import the AI generator here anymore (it loads the model at startup)
@@ -96,6 +99,12 @@ class NoiseAwareApp(tk.Tk):
         self._mic_sensitivity_value = self.mic_sensitivity.get()
         self.mic_sensitivity.trace_add("write", self._cache_mic_sensitivity)
         self.preferred_name = ""
+
+        # Settings persistence helpers
+        self._settings_path = Path(BASE_DIR) / "user_settings.json"
+        self._settings_save_after_id = None
+        self._loading_preferences = False
+        self._load_preferences()
 
         # Handle window close safely
         self.protocol("WM_DELETE_WINDOW", self.safe_quit)
@@ -176,6 +185,7 @@ class NoiseAwareApp(tk.Tk):
         """Force-terminate all threads, models, and subprocesses to free memory completely."""
         if messagebox.askokcancel("Quit", "Are you sure you want to exit?"):
             print("🧹 Cleaning up background tasks...")
+            self._flush_preferences_to_disk()
 
             # Stop custom threads
             self.app_running = False
@@ -245,14 +255,23 @@ class NoiseAwareApp(tk.Tk):
             return
         self.current_theme = theme_name
         self.apply_theme()
+        self._schedule_preferences_save()
 
     def set_pomodoro_alert_enabled(self, enabled):
         """Toggle the Pomodoro completion alert sound."""
-        self.pomodoro_alert_enabled = bool(enabled)
+        new_value = bool(enabled)
+        if self.pomodoro_alert_enabled == new_value:
+            return
+        self.pomodoro_alert_enabled = new_value
+        self._schedule_preferences_save()
 
     def set_preferred_name(self, name):
         """Persist the trimmed preferred name for downstream use."""
-        self.preferred_name = (name or "").strip()
+        sanitized = (name or "").strip()
+        if self.preferred_name == sanitized:
+            return
+        self.preferred_name = sanitized
+        self._schedule_preferences_save()
 
     def get_preferred_name(self):
         """Return the sanitized preferred name (empty string if unset)."""
@@ -267,6 +286,8 @@ class NoiseAwareApp(tk.Tk):
         numeric_value = max(0, min(100, numeric_value))
         if self.mic_sensitivity.get() != numeric_value:
             self.mic_sensitivity.set(numeric_value)
+        if not self._loading_preferences:
+            self._schedule_preferences_save()
 
     def get_mic_sensitivity(self):
         """Return the cached microphone sensitivity value for background threads."""
@@ -283,6 +304,88 @@ class NoiseAwareApp(tk.Tk):
     def adjust_mic_sensitivity(self, delta):
         """Incrementally adjust microphone sensitivity."""
         self.set_mic_sensitivity(self.mic_sensitivity.get() + delta)
+
+    def _load_preferences(self):
+        """Load persisted user preferences from disk."""
+        if self._loading_preferences:
+            return
+
+        self._loading_preferences = True
+        try:
+            data = {}
+            try:
+                self._settings_path.parent.mkdir(parents=True, exist_ok=True)
+                if self._settings_path.exists():
+                    with self._settings_path.open("r", encoding="utf-8") as fp:
+                        data = json.load(fp)
+            except (OSError, json.JSONDecodeError) as exc:
+                print(f"⚠️ Unable to load settings from {self._settings_path}: {exc}")
+                data = {}
+
+            theme = data.get("theme")
+            if isinstance(theme, str) and theme in self.themes:
+                self.current_theme = theme
+
+            mic_value = data.get("mic_sensitivity")
+            try:
+                if mic_value is not None:
+                    numeric_value = int(float(mic_value))
+                    numeric_value = max(0, min(100, numeric_value))
+                    if self.mic_sensitivity.get() != numeric_value:
+                        self.mic_sensitivity.set(numeric_value)
+            except (TypeError, ValueError):
+                pass
+
+            if "pomodoro_alert_enabled" in data:
+                self.pomodoro_alert_enabled = bool(data.get("pomodoro_alert_enabled"))
+
+            name = data.get("preferred_name")
+            if isinstance(name, str):
+                self.preferred_name = name.strip()
+        finally:
+            self._loading_preferences = False
+
+    def _schedule_preferences_save(self, delay_ms=500):
+        """Debounce writes of user settings to disk."""
+        if self._loading_preferences:
+            return
+
+        if self._settings_save_after_id is not None:
+            try:
+                self.after_cancel(self._settings_save_after_id)
+            except ValueError:
+                pass
+
+        self._settings_save_after_id = self.after(delay_ms, self._write_preferences_to_disk)
+
+    def _write_preferences_to_disk(self):
+        """Persist current settings to the JSON file."""
+        self._settings_save_after_id = None
+        payload = {
+            "theme": self.current_theme,
+            "mic_sensitivity": int(self.get_mic_sensitivity()),
+            "pomodoro_alert_enabled": bool(self.pomodoro_alert_enabled),
+            "preferred_name": self.get_preferred_name(),
+        }
+
+        try:
+            self._settings_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = self._settings_path.with_suffix(self._settings_path.suffix + ".tmp")
+            with tmp_path.open("w", encoding="utf-8") as fp:
+                json.dump(payload, fp, indent=2)
+            tmp_path.replace(self._settings_path)
+        except OSError as exc:
+            print(f"⚠️ Unable to save settings to {self._settings_path}: {exc}")
+
+    def _flush_preferences_to_disk(self):
+        """Synchronously write settings, cancelling any pending debounced save."""
+        if self._settings_save_after_id is not None:
+            try:
+                self.after_cancel(self._settings_save_after_id)
+            except ValueError:
+                pass
+            self._settings_save_after_id = None
+        self._write_preferences_to_disk()
 
     def play_pomodoro_alert(self):
         """Play the default system alert sound for Pomodoro completions."""
@@ -959,6 +1062,8 @@ class SettingsPage(tk.Frame):
         self.controller.set_pomodoro_alert_enabled(self.alert_var.get())
 
     def on_show(self):
+        if self.alert_var.get() != self.controller.pomodoro_alert_enabled:
+            self.alert_var.set(self.controller.pomodoro_alert_enabled)
         self._update_sensitivity_display()
 
     def on_theme_applied(self, _colors):
