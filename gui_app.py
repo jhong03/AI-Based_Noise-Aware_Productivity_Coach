@@ -1641,6 +1641,12 @@ class DetailedReportPage(tk.Frame):
             return
 
         db_values = df_logs["db_level"]
+        if db_values.dtype == object:
+            db_values = db_values.map(
+                lambda value: value.decode("utf-8", errors="ignore")
+                if isinstance(value, (bytes, bytearray))
+                else value
+            )
         if not np.issubdtype(db_values.dtype, np.number):
             db_values = (
                 db_values.astype(str)
@@ -1651,6 +1657,12 @@ class DetailedReportPage(tk.Frame):
 
         if "confidence" in df_logs:
             conf_values = df_logs["confidence"]
+            if conf_values.dtype == object:
+                conf_values = conf_values.map(
+                    lambda value: value.decode("utf-8", errors="ignore")
+                    if isinstance(value, (bytes, bytearray))
+                    else value
+                )
             if not np.issubdtype(conf_values.dtype, np.number):
                 conf_values = (
                     conf_values.astype(str)
