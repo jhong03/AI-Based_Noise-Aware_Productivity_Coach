@@ -83,8 +83,11 @@ def _unload_model(model=None):
 # =========================
 # Internal Worker (runs in subprocess)
 # =========================
-def _generate_in_subprocess(summary_text: str, queue: multiprocessing.Queue):
+def _generate_in_subprocess(summary_text: str, preferred_name: str, queue: multiprocessing.Queue):
     """Worker that loads TinyLlama, generates text, then exits (freeing memory)."""
+    preferred_name = (preferred_name or "").strip()
+    model = None
+    tokenizer = None
     try:
         dev, dtype = _device_hint()
         tokenizer = AutoTokenizer.from_pretrained(LOCAL_MODEL_PATH, use_fast=True)
@@ -102,6 +105,8 @@ def _generate_in_subprocess(summary_text: str, queue: multiprocessing.Queue):
             "Avoid greetings or sign-offs. Keep tone professional and natural. "
             "Avoid generating responses like your own thoughts — respond as if directly advising the user 1-to-1."
         )
+        if preferred_name:
+            system_prompt += f" Always address the user by the name {preferred_name}."
         content_guide = (
             "Structure your answer as:\n"
             "• 1 summary line about today’s environment\n"
@@ -130,18 +135,28 @@ def _generate_in_subprocess(summary_text: str, queue: multiprocessing.Queue):
             do_sample=DEFAULT_GEN_CFG.do_sample,
         )
 
-        text = tokenizer.decode(output_ids[0], skip_special_tokens=True)
+        generated_ids = output_ids[0][inputs["input_ids"].shape[-1]:]
+        text = tokenizer.decode(generated_ids, skip_special_tokens=True)
         text = _apply_stop_strings(text)
         text = _clean_spaces(text)
 
         if len(text) < 50 or "•" not in text:
-            text = (
-                "Today's noise environment was balanced overall.\n"
-                "• Protect your quiet hours by keeping notifications off during focus periods.\n"
-                "• Use brief breaks to refresh attention and maintain consistency.\n"
-                "• Reflect on which environments feel most productive and repeat them.\n"
-                "• Keep reinforcing your routine — progress compounds with each session."
-            )
+            if preferred_name:
+                text = (
+                    f"Today's noise environment was balanced overall for you, {preferred_name}.\n"
+                    "• Protect your quiet hours by keeping notifications off during focus periods.\n"
+                    "• Use brief breaks to refresh attention and maintain consistency.\n"
+                    "• Reflect on which environments feel most productive and repeat them.\n"
+                    "• Keep reinforcing your routine — progress compounds with each session."
+                )
+            else:
+                text = (
+                    "Today's noise environment was balanced overall.\n"
+                    "• Protect your quiet hours by keeping notifications off during focus periods.\n"
+                    "• Use brief breaks to refresh attention and maintain consistency.\n"
+                    "• Reflect on which environments feel most productive and repeat them.\n"
+                    "• Keep reinforcing your routine — progress compounds with each session."
+                )
 
         if text.count("•") < 3:
             text += (
@@ -156,7 +171,8 @@ def _generate_in_subprocess(summary_text: str, queue: multiprocessing.Queue):
         queue.put(f"⚠️ Report generation error: {e}")
     finally:
         _unload_model(model)
-        del tokenizer
+        if tokenizer is not None:
+            del tokenizer
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -165,6 +181,7 @@ def _generate_in_subprocess(summary_text: str, queue: multiprocessing.Queue):
 # Public API
 # =========================
 def generate_ai_report(summary_text: str,
+                       preferred_name: str = "",
                        progress_callback: Optional[Callable[[int, str], None]] = None) -> str:
     """
     Generates AI report safely in a subprocess to ensure full memory release.
@@ -174,7 +191,10 @@ def generate_ai_report(summary_text: str,
         progress_callback(10, "Spawning TinyLlama subprocess...")
 
     queue = multiprocessing.Queue()
-    process = multiprocessing.Process(target=_generate_in_subprocess, args=(summary_text, queue))
+    process = multiprocessing.Process(
+        target=_generate_in_subprocess,
+        args=(summary_text, preferred_name, queue)
+    )
     process.start()
 
     if progress_callback:

@@ -95,6 +95,7 @@ class NoiseAwareApp(tk.Tk):
         self.mic_sensitivity = tk.IntVar(value=50)  # microphone sensitivity level
         self._mic_sensitivity_value = self.mic_sensitivity.get()
         self.mic_sensitivity.trace_add("write", self._cache_mic_sensitivity)
+        self.preferred_name = ""
 
         # Handle window close safely
         self.protocol("WM_DELETE_WINDOW", self.safe_quit)
@@ -248,6 +249,14 @@ class NoiseAwareApp(tk.Tk):
     def set_pomodoro_alert_enabled(self, enabled):
         """Toggle the Pomodoro completion alert sound."""
         self.pomodoro_alert_enabled = bool(enabled)
+
+    def set_preferred_name(self, name):
+        """Persist the trimmed preferred name for downstream use."""
+        self.preferred_name = (name or "").strip()
+
+    def get_preferred_name(self):
+        """Return the sanitized preferred name (empty string if unset)."""
+        return getattr(self, "preferred_name", "").strip()
 
     def set_mic_sensitivity(self, value):
         """Update the microphone sensitivity (0-100)."""
@@ -465,9 +474,20 @@ class MainMenu(tk.Frame):
         tk.Label(self, text="NOISE-AWARE PRODUCTIVITY COACH",
                  font=("Arial", 16, "bold")).pack(pady=10)
 
+        # === Preferred Name Entry ===
+        name_frame = tk.Frame(self)
+        name_frame.pack(pady=(5, 0))
+        tk.Label(name_frame, text="Preferred Name:").pack(side="left", padx=(0, 5))
+        self.name_var = tk.StringVar(value=controller.get_preferred_name())
+        self.name_entry = tk.Entry(name_frame, textvariable=self.name_var, width=25)
+        self.name_entry.pack(side="left")
+        self.name_var.trace_add(
+            "write", lambda *_: self.controller.set_preferred_name(self.name_var.get())
+        )
+
         # === Buttons ===
         tk.Button(self, text="Start Pomodoro Session",
-                  command=lambda: controller.show_frame(PomodoroPage)).pack(pady=5)
+                  command=self.navigate_to_pomodoro).pack(pady=5)
 
         # Mic Test button
         self.mic_test_btn = tk.Button(self, text="🎤 Start Mic Test",
@@ -503,6 +523,20 @@ class MainMenu(tk.Frame):
         self.datetime_label.config(text=now)
         self.after(1000, self.update_datetime)
 
+    def navigate_to_pomodoro(self):
+        """Ensure a preferred name is provided before opening the Pomodoro page."""
+        name = self.controller.get_preferred_name()
+        if not name:
+            messagebox.showwarning(
+                "Preferred Name Required",
+                "Please enter your preferred name so we can tailor your Pomodoro support."
+            )
+            self.name_entry.focus_set()
+            return
+        if self.name_var.get() != name:
+            self.name_var.set(name)
+        self.controller.show_frame(PomodoroPage)
+
     def toggle_mic_test(self):
         """Toggle microphone intensity testing."""
         if not self.mic_test_running:
@@ -522,6 +556,12 @@ class MainMenu(tk.Frame):
         intensity = min(max(db, 0), 100)
         self.progress["value"] = intensity
         self.after(50, self.update_mic_bar)
+
+    def on_show(self):
+        """Refresh the preferred name entry whenever the page becomes visible."""
+        current_name = self.controller.get_preferred_name()
+        if self.name_var.get() != current_name:
+            self.name_var.set(current_name)
 
     def toggle_recording(self):
         """Toggle passive monitoring ON/OFF."""
@@ -723,6 +763,14 @@ class ReportPage(tk.Frame):
             messagebox.showinfo("AI Report", "No data available for today.")
             return
 
+        preferred_name = self.controller.get_preferred_name()
+        if not preferred_name:
+            messagebox.showwarning(
+                "Preferred Name Required",
+                "Please enter your preferred name on the main menu so the AI report can speak to you directly."
+            )
+            return
+
         # progress bar UI
         self.progress = ttk.Progressbar(self, orient="horizontal", length=350, mode="determinate", maximum=100)
         self.progress.pack(pady=5)
@@ -739,10 +787,14 @@ class ReportPage(tk.Frame):
                 from ai_report_generator_local import generate_ai_report
 
                 try:
-                    report = generate_ai_report(summary_text, progress_callback=on_progress)
+                    report = generate_ai_report(
+                        summary_text,
+                        preferred_name=preferred_name,
+                        progress_callback=on_progress
+                    )
                 except TypeError:
                     # In case callback isn't supported
-                    report = generate_ai_report(summary_text)
+                    report = generate_ai_report(summary_text, preferred_name=preferred_name)
 
                 # ✅ Save to local DB
                 conn = get_connection()
