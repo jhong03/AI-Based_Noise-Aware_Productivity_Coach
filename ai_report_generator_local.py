@@ -65,6 +65,112 @@ def _clean_spaces(text: str) -> str:
     return text.strip()
 
 
+def _parse_summary_metrics(summary_text: str) -> dict:
+    """Extract useful numbers and descriptors from the raw summary text."""
+    metrics = {}
+    summary = summary_text or ""
+
+    avg_match = re.search(r"Average[^0-9]*([0-9]+(?:\.[0-9]+)?)\s*dB", summary, re.IGNORECASE)
+    if avg_match:
+        metrics["average_db"] = avg_match.group(1)
+
+    avg_label_match = re.search(r"Average[^()]*\(([^)]+)\)", summary, re.IGNORECASE)
+    if avg_label_match:
+        metrics["average_label"] = avg_label_match.group(1)
+
+    most_common_match = re.search(r"Most common:\s*([\w\s-]+)", summary, re.IGNORECASE)
+    if most_common_match:
+        metrics["most_common_noise"] = most_common_match.group(1).strip()
+
+    quiet_match = re.search(r"Quiet(?:est)?(?: window| period)?:\s*([^\n]+)", summary, re.IGNORECASE)
+    if quiet_match:
+        metrics["quiet_window"] = quiet_match.group(1).strip()
+
+    loud_match = re.search(r"(?:Peak|Loudest)(?: window| period| level)?:\s*([^\n]+)", summary, re.IGNORECASE)
+    if loud_match:
+        metrics["loud_window"] = loud_match.group(1).strip()
+
+    pom_match = re.search(r"Pomodoros:\s*([0-9]+)(?:\s*\(([^)]+)\))?", summary, re.IGNORECASE)
+    if pom_match:
+        metrics["pomodoros"] = pom_match.group(1)
+        if pom_match.group(2):
+            metrics["pomodoro_detail"] = pom_match.group(2).strip()
+
+    focus_min_match = re.search(r"([0-9]+)\s*min\s*focused", summary, re.IGNORECASE)
+    if focus_min_match:
+        metrics["focused_minutes"] = focus_min_match.group(1)
+
+    return metrics
+
+
+def _build_fallback_response(summary_text: str, preferred_name: str) -> str:
+    metrics = _parse_summary_metrics(summary_text)
+
+    user_suffix = f" for you, {preferred_name}" if preferred_name else ""
+
+    if metrics.get("average_db"):
+        label_part = f" ({metrics['average_label']})" if metrics.get("average_label") else ""
+        summary_line = (
+            f"Today's noise environment hovered around {metrics['average_db']} dB{label_part}{user_suffix}, "
+            "offering a stable backdrop for focus."
+        )
+    else:
+        summary_line = f"Today's noise environment was balanced overall{user_suffix}."
+
+    bullets = []
+
+    if metrics.get("most_common_noise"):
+        bullets.append(
+            f"• Dominant noise source: {metrics['most_common_noise']}. Plan deep-focus work when this source is naturally lower, and batch collaborative tasks when it's active."
+        )
+    else:
+        bullets.append(
+            "• Protect your quiet hours by silencing notifications and closing non-essential tabs during priority work blocks."
+        )
+
+    if metrics.get("quiet_window"):
+        bullets.append(
+            f"• Leverage the quieter window ({metrics['quiet_window']}) for high-cognition work and schedule reminders to start your toughest task then."
+        )
+    else:
+        bullets.append(
+            "• Identify a repeatable quiet window in your day and guard it with calendar blocks for deep work."
+        )
+
+    if metrics.get("loud_window"):
+        bullets.append(
+            f"• During louder periods ({metrics['loud_window']}), shift to lighter tasks, collaborative check-ins, or use noise-masking audio to stay composed."
+        )
+    else:
+        bullets.append(
+            "• Keep a ready playlist or noise buffer for surprise spikes so interruptions don't derail your momentum."
+        )
+
+    if metrics.get("pomodoros") or metrics.get("focused_minutes"):
+        focus_detail = []
+        if metrics.get("pomodoros"):
+            focus_detail.append(f"{metrics['pomodoros']} Pomodoros")
+        if metrics.get("pomodoro_detail"):
+            focus_detail.append(metrics['pomodoro_detail'])
+        elif metrics.get("focused_minutes"):
+            focus_detail.append(f"{metrics['focused_minutes']} min focused work")
+
+        focus_text = " and ".join(focus_detail)
+        bullets.append(
+            f"• Sustain that {focus_text}; pair each session with a brief reset so the routine stays energizing."
+        )
+    else:
+        bullets.append(
+            "• Use brief breaks every 50–60 minutes to refresh attention and reinforce consistent performance."
+        )
+
+    bullets.append(
+        "• Track which environments feel most productive, note what made them work, and keep reinforcing those routines so progress compounds each session."
+    )
+
+    return "\n".join([summary_line, *bullets])
+
+
 def _unload_model(model=None):
     """Internal memory cleanup helper."""
     try:
@@ -141,22 +247,7 @@ def _generate_in_subprocess(summary_text: str, preferred_name: str, queue: multi
         text = _clean_spaces(text)
 
         if len(text) < 50 or "•" not in text:
-            if preferred_name:
-                text = (
-                    f"Today's noise environment was balanced overall for you, {preferred_name}.\n"
-                    "• Protect your quiet hours by keeping notifications off during focus periods.\n"
-                    "• Use brief breaks to refresh attention and maintain consistency.\n"
-                    "• Reflect on which environments feel most productive and repeat them.\n"
-                    "• Keep reinforcing your routine — progress compounds with each session."
-                )
-            else:
-                text = (
-                    "Today's noise environment was balanced overall.\n"
-                    "• Protect your quiet hours by keeping notifications off during focus periods.\n"
-                    "• Use brief breaks to refresh attention and maintain consistency.\n"
-                    "• Reflect on which environments feel most productive and repeat them.\n"
-                    "• Keep reinforcing your routine — progress compounds with each session."
-                )
+            text = _build_fallback_response(summary_text, preferred_name)
 
         if text.count("•") < 3:
             text += (
