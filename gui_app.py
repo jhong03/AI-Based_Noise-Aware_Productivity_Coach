@@ -564,27 +564,28 @@ class MainMenu(tk.Frame):
         self.controller = controller
         self.mic_test_running = False  # mic test state
 
-        # === Top Navigation Bar (icons grouped on one side) ===
+        # === Top Navigation Bar (restored button layout with labels for clarity) ===
         self.nav_frame = tk.Frame(self)
-        self.nav_frame.place(relx=0.95, rely=0.05, anchor="ne")
+        self.nav_frame.pack(fill="x", pady=(10, 5))
 
-        icon_config = [
-            ("📑", lambda e: controller.show_frame(ReportPage)),
-            ("⚙️", lambda e: controller.show_frame(SettingsPage)),
-            ("🖥️", lambda e: self.controller.show_log_window()),
+        button_container = tk.Frame(self.nav_frame)
+        button_container.pack()
+
+        button_config = [
+            ("View Reports 📑", lambda: controller.show_frame(ReportPage)),
+            ("Open Settings ⚙️", lambda: controller.show_frame(SettingsPage)),
+            ("Live Log 🖥️", self.controller.show_log_window),
         ]
 
-        for icon_text, handler in icon_config:
-            icon_label = tk.Label(
-                self.nav_frame,
-                text=icon_text,
-                font=("Arial", 16),
+        for text, command in button_config:
+            tk.Button(
+                button_container,
+                text=text,
+                command=command,
                 cursor="hand2",
-                width=3,
-                anchor="center",
-            )
-            icon_label.pack(anchor="e", pady=5)
-            icon_label.bind("<Button-1>", handler)
+                padx=10,
+                pady=2,
+            ).pack(side="left", padx=5)
 
         # === Date & Time ===
         self.datetime_label = tk.Label(self, text="", font=("Arial", 12))
