@@ -554,19 +554,25 @@ class MainMenu(tk.Frame):
         self.controller = controller
         self.mic_test_running = False  # mic test state
 
-        # === Top Navigation Bar (icons) ===
-        report_icon = tk.Label(self, text="📑", font=("Arial", 16), cursor="hand2")
-        report_icon.place(relx=0.05, rely=0.05, anchor="nw")
-        report_icon.bind("<Button-1>", lambda e: controller.show_frame(ReportPage))
+        # === Top Navigation Bar (icons grouped on one side) ===
+        self.nav_frame = tk.Frame(self)
+        self.nav_frame.place(relx=0.95, rely=0.05, anchor="ne")
 
-        # Terminal / Log icon
-        log_icon = tk.Label(self, text="🖥️", font=("Arial", 16), cursor="hand2")
-        log_icon.place(relx=0.95, rely=0.95, anchor="sw")  # adjust position
-        log_icon.bind("<Button-1>", lambda e: self.controller.show_log_window())
+        icon_config = [
+            ("📑", lambda e: controller.show_frame(ReportPage)),
+            ("⚙️", lambda e: controller.show_frame(SettingsPage)),
+            ("🖥️", lambda e: self.controller.show_log_window()),
+        ]
 
-        settings_icon = tk.Label(self, text="⚙️", font=("Arial", 16), cursor="hand2")
-        settings_icon.place(relx=0.95, rely=0.05, anchor="ne")
-        settings_icon.bind("<Button-1>", lambda e: controller.show_frame(SettingsPage))
+        for icon_text, handler in icon_config:
+            icon_label = tk.Label(
+                self.nav_frame,
+                text=icon_text,
+                font=("Arial", 16),
+                cursor="hand2",
+            )
+            icon_label.pack(anchor="e", pady=5)
+            icon_label.bind("<Button-1>", handler)
 
         # === Date & Time ===
         self.datetime_label = tk.Label(self, text="", font=("Arial", 12))
