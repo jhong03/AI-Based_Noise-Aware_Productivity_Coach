@@ -35,3 +35,9 @@ python -m venv .venv
 
 # Install dependencies
 pip install -r requirements.txt
+
+## Run the App
+python gui_app.py
+
+or simply double-click:
+run_app.bat
