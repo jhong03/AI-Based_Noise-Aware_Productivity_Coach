@@ -1,38 +1,37 @@
-AI-Based Noise-Aware Productivity Coach
+# 🎧 AI-Based Noise-Aware Productivity Coach
 
-An intelligent desktop app that analyzes environmental noise levels in real-time using YAMNet and provides feedback to help users maintain focus and productivity.
+An intelligent desktop app that analyzes environmental noise levels in real time using **YAMNet** and provides feedback to help users maintain focus and productivity.
 
-Features
-Real-time environmental sound detection using TensorFlow YAMNet
+---
 
-Noise awareness feedback via GUI
+## 🚀 Features
+- 🎤 Real-time environmental sound detection using TensorFlow YAMNet  
+- 🧠 AI-driven noise awareness feedback via GUI  
+- 💾 Local SQLite-based logging of productivity sessions  
+- 📊 Visual analytics dashboard for historical sound patterns  
+- ⏱️ Two operation modes: Passive and Pomodoro  
 
-Local SQLite-based logging of productivity sessions
+---
 
-Visual analytics for historical sound patterns
+## 🧰 Tech Stack
+- **Python 3.10+**
+- **TensorFlow Hub (YAMNet)**
+- **Tkinter GUI**
+- **SQLite** (for local data storage)
+- **Matplotlib** (for visualization)
 
-Tech Stack
-Python 3.10+
+---
 
-TensorFlow Hub (YAMNet)
+## ⚙️ Setup
 
-Tkinter GUI
+```bash
+# Clone the repository
+git clone https://github.com/<your-username>/AI-Based_Noise-Aware_Productivity_Coach.git
+cd AI-Based_Noise-Aware_Productivity_Coach
 
-SQLite for data logging
-
-Matplotlib for visualization
-
-Setup
-git clone https://github.com/<your-username>/AI-NoiseAware-Coach.git
-cd AI-NoiseAware-Coach
+# Create and activate virtual environment
 python -m venv .venv
 .venv\Scripts\activate
+
+# Install dependencies
 pip install -r requirements.txt
-
-▶️ Run the App
-python gui_app.py
-
-
-or use the batch file:
-
-run_app.bat
