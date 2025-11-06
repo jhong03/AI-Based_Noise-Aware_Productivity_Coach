@@ -1,9 +1,9 @@
-tk
 tensorflow
-torch
+tensorflow-hub
+keras
 pyaudio
 matplotlib
 numpy
 pandas
-sqlite3
-reportlab
+sqlite3-binary
+tkinterdnd2
