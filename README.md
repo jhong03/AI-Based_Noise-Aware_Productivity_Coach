@@ -29,5 +29,4 @@ python gui_app.py
 The TinyLlama model is **not included** due to GitHub’s 100 MB file limit.
 
 Download it once from [TinyLlama-1.1B-Chat-v1.0](https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0)
-and place it here:
 
