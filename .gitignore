@@ -1,17 +1,12 @@
-# Virtual environment
-.venv/
-venv/
-
-# Build artifacts
-build/
-dist/
-*.spec
-
-# System files
 __pycache__/
 *.pyc
-.DS_Store
-
-# Databases / logs
-*.db
-logs/
+*.pyo
+*.spec
+dist/
+build/
+TinyLlama/TinyLlama-1.1B-Chat-v1.0/
+noise_focus.db
+*.log
+*.txt
+*.csv
+Documents/
