@@ -1,9 +1,8 @@
 tensorflow
 tensorflow-hub
-keras
-pyaudio
+torch
+transformers
+sounddevice
 matplotlib
 numpy
-pandas
-sqlite3-binary
-tkinterdnd2
+psutil
