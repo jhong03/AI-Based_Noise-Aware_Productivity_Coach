@@ -872,7 +872,7 @@ class ReportPage(tk.Frame):
             return "\n".join([
                 f"Date: {today.strftime('%b %d, %Y')}",
                 f"Total noise logs: {total_logs}",
-                f"Average sound level: {avg_db:.1f} dB SPL",
+                f"Average sound level: {avg_db+45:.1f} dB SPL",
                 f"Noise mix → Quiet {pct(quiet):.0f}% | Moderate {pct(moderate):.0f}% | Noisy {pct(noisy):.0f}%",
                 f"Most common sound: {top_label}",
                 f"Completed Pomodoros: {session_count or 0} (≈ {focus_minutes:.0f} min focused work)"
