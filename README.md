@@ -19,7 +19,7 @@ and generates AI-based productivity feedback using TinyLlama.
 
 ## ⚙️ Setup
 ```bash
-git clone https://github.com/<your-username>/NoiseAwareCoach.git
+git clone https://github.com/jhong03/NoiseAwareCoach.git
 cd NoiseAwareCoach
 pip install -r requirements.txt
 python gui_app.py
