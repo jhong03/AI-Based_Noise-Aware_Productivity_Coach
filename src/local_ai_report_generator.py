@@ -1,50 +1,44 @@
-"""
-Optimized TinyLlama local report generator (Subprocess-Safe)
-------------------------------------------------------------
-• Fast & lightweight (<= 4 GB RAM during generation)
-• Runs model in an isolated subprocess — full memory release after each report
-• Compatible with GUI auto-progress callbacks
-• Generates concise, motivational coaching summaries
-"""
+# AI Report Generator (Explanatory Summary + Insights)
+# ----------------------------------------------------
+# Features:
+# - Summary line expanded into short explanatory paragraph
+# - Bullet points provide actionable insights only
+# - High-variation output with style modes and random seeds
+# - Memory-safe subprocess architecture
+# - Fallback ensures longer, structured reports
 
 import os
 import gc
 import re
 import multiprocessing
+import random
 from typing import Optional, Callable
 
 import torch
-from transformers import (
-    AutoTokenizer,
-    AutoModelForCausalLM,
-    GenerationConfig,
-)
-
+from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
 
 # =========================
-# Environment + Config
+# Environment + Model Path
 # =========================
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1"  # Prevent TensorFlow GPU reserve
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 
 LOCAL_MODEL_PATH = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 
 DEFAULT_GEN_CFG = GenerationConfig(
-    max_new_tokens=900,
-    temperature=0.8,
-    top_p=0.95,
-    repetition_penalty=1.05,
-    presence_penalty=0.2,
+    max_new_tokens=1200,
+    temperature=1.1,
+    top_p=0.92,
+    top_k=40,
+    repetition_penalty=1.08,
     do_sample=True,
     return_full_text=False
 )
 
-STOP_STRINGS = ["\nUser:", "\nAssistant:", "\nCoach:", "\nSystem:"]
-
-
 # =========================
 # Utilities
 # =========================
+
 def _device_hint():
     if torch.cuda.is_available():
         return "cuda", torch.float16
@@ -52,169 +46,121 @@ def _device_hint():
         return "mps", torch.float16
     return "cpu", torch.float32
 
-
-def _apply_stop_strings(text: str) -> str:
-    for s in STOP_STRINGS:
-        if s in text:
-            text = text.split(s)[0]
-    return text.strip()
-
-
 def _clean_spaces(text: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
+def _extract_first_int(text: str):
+    if not text:
+        return None
+    m = re.search(r"([0-9]+)", text)
+    return int(m.group(1)) if m else None
 
 def _parse_summary_metrics(summary_text: str) -> dict:
-    """Extract useful numbers and descriptors from the raw summary text."""
     metrics = {}
-    summary = summary_text or ""
+    s = summary_text or ""
 
-    avg_match = re.search(r"Average[^0-9]*([0-9]+(?:\.[0-9]+)?)\s*dB", summary, re.IGNORECASE)
-    if avg_match:
-        metrics["average_db"] = avg_match.group(1)
+    avg = re.search(r"Average[^0-9]*([0-9]+(?:\.[0-9]+)?)", s)
+    if avg:
+        metrics["average_db"] = avg.group(1)
 
-    avg_label_match = re.search(r"Average[^()]*\(([^)]+)\)", summary, re.IGNORECASE)
-    if avg_label_match:
-        metrics["average_label"] = avg_label_match.group(1)
+    label = re.search(r"Average[^()]*\(([^)]+)\)", s)
+    if label:
+        metrics["average_label"] = label.group(1)
 
-    most_common_match = re.search(r"Most common:\s*([\w\s-]+)", summary, re.IGNORECASE)
-    if most_common_match:
-        metrics["most_common_noise"] = most_common_match.group(1).strip()
+    mc = re.search(r"Most common:\s*([^\n]+)", s)
+    if mc:
+        metrics["most_common_noise"] = mc.group(1).strip()
 
-    quiet_match = re.search(r"Quiet(?:est)?(?: window| period)?:\s*([^\n]+)", summary, re.IGNORECASE)
-    if quiet_match:
-        metrics["quiet_window"] = quiet_match.group(1).strip()
+    q = re.search(r"Quiet(?:est)?[^:]*:\s*([^\n]+)", s)
+    if q:
+        metrics["quiet_window"] = q.group(1).strip()
 
-    loud_match = re.search(r"(?:Peak|Loudest)(?: window| period| level)?:\s*([^\n]+)", summary, re.IGNORECASE)
-    if loud_match:
-        metrics["loud_window"] = loud_match.group(1).strip()
+    l = re.search(r"(?:Peak|Loudest)[^:]*:\s*([^\n]+)", s)
+    if l:
+        metrics["loud_window"] = l.group(1).strip()
 
-    pom_match = re.search(r"Pomodoros:\s*([0-9]+)(?:\s*\(([^)]+)\))?", summary, re.IGNORECASE)
-    if pom_match:
-        metrics["pomodoros"] = pom_match.group(1)
-        if pom_match.group(2):
-            metrics["pomodoro_detail"] = pom_match.group(2).strip()
+    pom = re.search(r"Pomodoros:\s*([0-9]+)(?:\s*\(([^)]+)\))?", s)
+    if pom:
+        metrics["pomodoros"] = pom.group(1)
+        if pom.group(2):
+            metrics["pomodoro_detail"] = pom.group(2)
 
-    focus_min_match = re.search(r"([0-9]+)\s*min\s*focused", summary, re.IGNORECASE)
-    if focus_min_match:
-        metrics["focused_minutes"] = focus_min_match.group(1)
+    fm = re.search(r"([0-9]+)\s*min\s*focused", s)
+    if fm:
+        metrics["focused_minutes"] = fm.group(1)
 
     return metrics
 
-
-def _extract_first_int(text: str) -> Optional[int]:
-    """Return the first integer value found in ``text`` if present."""
-    if not text:
-        return None
-    match = re.search(r"([0-9]+)", text)
-    if match:
-        return int(match.group(1))
-    return None
-
-
-def _build_fallback_response(summary_text: str, preferred_name: str) -> str:
+def _soft_fallback(summary_text: str, preferred_name: str) -> str:
     metrics = _parse_summary_metrics(summary_text)
+    name_suffix = f", {preferred_name}" if preferred_name else ""
 
-    user_suffix = f" for you, {preferred_name}" if preferred_name else ""
-
-    if metrics.get("average_db"):
-        label_part = f" ({metrics['average_label']})" if metrics.get("average_label") else ""
-        summary_line = (
-            f"Today's noise environment hovered around {metrics['average_db']} dB{label_part}{user_suffix}, "
-            "offering a stable backdrop for focus."
-        )
-    else:
-        summary_line = f"Today's noise environment was balanced overall{user_suffix}."
+    # Expanded explanatory summary
+    summary_line = (
+        f"Today's environment showed steady patterns{name_suffix}. "
+        "Overall, the sound levels were moderate with identifiable quiet periods and occasional peaks. "
+        "These patterns provide useful cues to organize focus sessions effectively."
+    )
 
     bullets = []
 
-    if metrics.get("most_common_noise"):
-        bullets.append(
-            f"• Dominant noise source: {metrics['most_common_noise']}. Plan deep-focus work when this source is naturally lower, and batch collaborative tasks when it's active."
-        )
-    else:
-        bullets.append(
-            "• Protect your quiet hours by silencing notifications and closing non-essential tabs during priority work blocks."
-        )
+    # Noise-based bullet
+    noise_options = [
+        "Anchor difficult tasks in naturally stable sound windows.",
+        "Notice how recurring sounds influence your energy; schedule high-focus work accordingly.",
+        "Use predictable quiet periods for tasks requiring concentration."
+    ]
+    bullets.append("• " + random.choice(noise_options))
 
-    if metrics.get("quiet_window"):
-        bullets.append(
-            f"• Leverage the quieter window ({metrics['quiet_window']}) for high-cognition work and schedule reminders to start your toughest task then."
-        )
-    else:
-        bullets.append(
-            "• Identify a repeatable quiet window in your day and guard it with calendar blocks for deep work."
-        )
+    # Focus-based bullet
+    focus_options = [
+        "Use short resets between tasks to clear mental residue.",
+        "Start the day with one strong focus block to build momentum.",
+        "Track your most productive intervals and replicate them tomorrow."
+    ]
+    bullets.append("• " + random.choice(focus_options))
 
-    if metrics.get("loud_window"):
-        bullets.append(
-            f"• During louder periods ({metrics['loud_window']}), shift to lighter tasks, collaborative check-ins, or use noise-masking audio to stay composed."
-        )
-    else:
-        bullets.append(
-            "• Keep a ready playlist or noise buffer for surprise spikes so interruptions don't derail your momentum."
-        )
+    # Improvement action
+    improvement_options = [
+        "Shift admin work into high-noise moments to preserve focus energy.",
+        "Protect at least one quiet window with a schedule block.",
+        "Experiment with light sound-masking during louder periods."
+    ]
+    bullets.append("• " + random.choice(improvement_options))
 
-    pomodoros_str = metrics.get("pomodoros")
-    pomodoros_count = int(pomodoros_str) if pomodoros_str and pomodoros_str.isdigit() else None
-
-    focus_minutes_str = metrics.get("focused_minutes")
-    focus_minutes = int(focus_minutes_str) if focus_minutes_str and focus_minutes_str.isdigit() else None
-
-    detail_text = metrics.get("pomodoro_detail")
-    detail_minutes = _extract_first_int(detail_text) if detail_text else None
-
-    focus_detail = []
-    if pomodoros_count and pomodoros_count > 0:
-        focus_detail.append(f"{pomodoros_count} Pomodoros")
-    if detail_text and (detail_minutes is None or detail_minutes > 0):
-        focus_detail.append(detail_text)
-    elif focus_minutes and focus_minutes > 0:
-        focus_detail.append(f"{focus_minutes} min focused work")
-
-    if focus_detail:
-        focus_text = " and ".join(focus_detail)
-        bullets.append(
-            f"• Sustain that {focus_text}; pair each session with a brief reset so the routine stays energizing."
-        )
-    else:
-        bullets.append(
-            "• Build momentum with one protected Pomodoro today and log the focused minutes to start a positive streak."
-        )
-
-    bullets.append(
-        "• Track which environments feel most productive, note what made them work, and keep reinforcing those routines so progress compounds each session."
-    )
+    # Additional guidance
+    bullets.append("• Extend one focus block into a longer streak when energy feels stable.")
+    bullets.append("• Note one behaviour that helped today and intentionally repeat it tomorrow.")
 
     return "\n".join([summary_line, *bullets])
 
-
-def _unload_model(model=None):
-    """Internal memory cleanup helper."""
-    try:
-        print("🧹 Cleaning TinyLlama model from memory...")
-        if model is not None:
-            model.to("cpu")
-            del model
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        gc.collect()
-        print("✅ TinyLlama model memory released.")
-    except Exception as e:
-        print(f"⚠️ Cleanup error: {e}")
-
-
 # =========================
-# Internal Worker (runs in subprocess)
+# Internal Subprocess Worker
 # =========================
+
 def _generate_in_subprocess(summary_text: str, preferred_name: str, queue: multiprocessing.Queue):
-    """Worker that loads TinyLlama, generates text, then exits (freeing memory)."""
-    preferred_name = (preferred_name or "").strip()
     model = None
     tokenizer = None
+
     try:
         dev, dtype = _device_hint()
+
+        style_mode = random.choice([
+            "Analytical", "Motivational", "Technical", "Friendly", "Minimalist"
+        ])
+
+        style_seed = random.choice([
+            "Focus on how micro-shifts influenced your clarity today.",
+            "Notice the emotional tone of the environment.",
+            "Momentum built during your stronger intervals.",
+            "Your pacing created natural focus arcs.",
+            "Small cues guided your most productive windows.",
+        ])
+
+        random_noise_token = os.urandom(4).hex()
+
+        # Load model + tokenizer
         tokenizer = AutoTokenizer.from_pretrained(LOCAL_MODEL_PATH, use_fast=True)
         model = AutoModelForCausalLM.from_pretrained(
             LOCAL_MODEL_PATH,
@@ -224,81 +170,84 @@ def _generate_in_subprocess(summary_text: str, preferred_name: str, queue: multi
         )
         model.eval()
 
+        # =========================
+        # FINAL SYSTEM PROMPT
+        # =========================
         system_prompt = (
-            "You are a local noise-aware productivity coach. "
-            "Analyze focus and noise data, highlight key patterns, and provide concise, motivational advice. "
-            "Avoid greetings or sign-offs. Keep tone professional and natural. "
-            "Avoid generating responses like your own thoughts — respond as if directly advising the user 1-to-1."
+            "You are a noise-aware productivity coach. Your task is to produce a clean, explanatory daily insight report. "
+            "Start with a short paragraph summarizing today's noise patterns and their impact on focus. "
+            "Then provide 3–5 bullet points of actionable guidance or insights. "
+            "Use the preferred_name only once in the summary line if provided. "
+            "Avoid greetings, sign-offs, or any mention of being an AI. "
+            "Keep phrasing varied, natural, and human-like."
         )
-        if preferred_name:
-            system_prompt += f" Always address the user by the name {preferred_name}."
+
         content_guide = (
-            "Structure your answer as:\n"
-            "• 1 summary line about today’s environment\n"
-            "• 3–5 bullet points covering noise patterns, improvements, and focus actions.\n"
-            "• Include actionable productivity suggestions.\n"
-            "• Give encouragement based on trends in the noise data."
+            f"Preferred name (use once): {preferred_name if preferred_name else 'None'}.\n"
+            f"Style mode: {style_mode}.\n"
+            f"Subtle stylistic idea: '{style_seed}'.\n"
+            "Incorporate any detectable environmental patterns (quiet windows, peaks, averages, common sources, etc.). "
+            "Keep bullets concise and distinct. Avoid repeating the summary content."
         )
 
         prompt = (
-            f"{system_prompt}\n\n{content_guide}\n\n"
-            f"Today's Summary:\n{summary_text.strip()}\n\n"
-            "Now write the complete response in the requested structure. "
-            "Make it motivational and actionable with focus improvement tips based on the data. "
-            "Avoid describing yourself; speak directly to the user.\n"
-            "Respond directly:\n"
+            f"{system_prompt}\n\n"
+            f"{content_guide}\n\n"
+            f"Today's Summary:\n{summary_text}\n\n"
+            "Generate the report now."
         )
 
         inputs = tokenizer(prompt, return_tensors="pt").to(dev)
-
         output_ids = model.generate(
             **inputs,
             max_new_tokens=DEFAULT_GEN_CFG.max_new_tokens,
             temperature=DEFAULT_GEN_CFG.temperature,
             top_p=DEFAULT_GEN_CFG.top_p,
+            top_k=DEFAULT_GEN_CFG.top_k,
             repetition_penalty=DEFAULT_GEN_CFG.repetition_penalty,
-            do_sample=DEFAULT_GEN_CFG.do_sample,
+            do_sample=True,
         )
 
         generated_ids = output_ids[0][inputs["input_ids"].shape[-1]:]
         text = tokenizer.decode(generated_ids, skip_special_tokens=True)
-        text = _apply_stop_strings(text)
         text = _clean_spaces(text)
 
-        if len(text) < 50 or "•" not in text:
-            text = _build_fallback_response(summary_text, preferred_name)
+        # =========================
+        # Fallback if generation too short
+        # =========================
+        if len(text) < 150:
+            text = _soft_fallback(summary_text, preferred_name)
 
         if text.count("•") < 3:
             text += (
-                "\n• Plan one dedicated silent Pomodoro to rebuild focus.\n"
-                "• Review noise trends weekly to optimize your environment.\n"
-                "• Reward yourself after sustained focus sessions to reinforce momentum."
+                "\n• Use a structured focus cycle to build consistency."
+                "\n• Add one small environmental adjustment tomorrow (lighting, desk setup, etc.)."
             )
 
         queue.put(text)
 
     except Exception as e:
         queue.put(f"⚠️ Report generation error: {e}")
+
     finally:
-        _unload_model(model)
+        if model is not None:
+            model.to("cpu")
+            del model
         if tokenizer is not None:
             del tokenizer
         gc.collect()
         torch.cuda.empty_cache()
 
-
 # =========================
 # Public API
 # =========================
+
 def generate_ai_report(summary_text: str,
                        preferred_name: str = "",
                        progress_callback: Optional[Callable[[int, str], None]] = None) -> str:
-    """
-    Generates AI report safely in a subprocess to ensure full memory release.
-    The GUI can call this normally — no changes needed.
-    """
+
     if progress_callback:
-        progress_callback(10, "Spawning TinyLlama subprocess...")
+        progress_callback(10, "Starting TinyLlama subprocess...")
 
     queue = multiprocessing.Queue()
     process = multiprocessing.Process(
@@ -308,7 +257,7 @@ def generate_ai_report(summary_text: str,
     process.start()
 
     if progress_callback:
-        progress_callback(50, "TinyLlama generating report...")
+        progress_callback(50, "Generating report...")
 
     process.join()
     result = queue.get() if not queue.empty() else "⚠️ No report generated."
@@ -316,13 +265,11 @@ def generate_ai_report(summary_text: str,
 
     if progress_callback:
         progress_callback(100, "Done.")
-    print("🧹 Subprocess exited — memory fully released.")
 
     return result
 
-
 # =========================
-# Manual test
+# Manual Test
 # =========================
 if __name__ == "__main__":
     sample = (
@@ -332,4 +279,5 @@ if __name__ == "__main__":
         "Most common: Speech\n"
         "Pomodoros: 3 (75 min focused work)"
     )
-    print(generate_ai_report(sample))
+
+    print(generate_ai_report(sample, preferred_name="Jing Han"))
